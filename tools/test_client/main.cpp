@@ -3,6 +3,10 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+#include <thread>
+#include <chrono>
+#include <atomic>
+
 #include "WinsockGuard.h"
 #include "TcpFramer.h"
 #include "ProtocolTypes.h"
@@ -11,7 +15,7 @@
 #include "MessageMessages.h"
 
 constexpr const char* SERVICE_HOST = "127.0.0.1";
-constexpr int AUTH_SERVICE_PORT = 6001;
+constexpr int AUTH_SERVICE_PORT = 6000;  // было 6001 — теперь идём через gateway
 constexpr int ROOM_SERVICE_PORT = 6002;
 constexpr int MESSAGE_SERVICE_PORT = 6003;
 
@@ -226,6 +230,46 @@ void DoHistory() {
     }
 }
 
+void DoConcurrencyTest() {
+    std::string username, password;
+    std::cout << "  Username: "; std::cin >> username;
+    std::cout << "  Password: "; std::cin >> password;
+
+    int threadCount = 0;
+    std::cout << "  Parallel logins: "; std::cin >> threadCount;
+    if (threadCount < 1) return;
+
+    AuthRequestPayload request;
+    request.username = username;
+    request.password = password;
+    std::vector<uint8_t> payload = request.Serialize();
+
+    std::atomic<int> successCount{ 0 };
+    std::vector<std::thread> threads;
+
+    auto start = std::chrono::steady_clock::now();
+
+    for (int i = 0; i < threadCount; ++i) {
+        threads.emplace_back([&payload, &successCount]() {
+            Frame response;
+            if (Exchange(AUTH_SERVICE_PORT, MessageType::AuthRequest, payload,
+                MessageType::AuthResponse, response)) {
+                auto r = AuthResponsePayload::Deserialize(response.payload);
+                if (r.status == 0) successCount++;
+            }
+            });
+    }
+
+    for (auto& t : threads) t.join();
+
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+
+    std::cout << "  " << successCount << "/" << threadCount << " logins succeeded in "
+        << elapsed << " ms" << std::endl;
+    std::cout << "  (~" << (elapsed / threadCount) << " ms per login on average)" << std::endl;
+}
+
 int main() {
     WinsockGuard winsock;
     if (!winsock.IsInitialized()) {
@@ -249,6 +293,8 @@ int main() {
         std::cout << "--- messages ---" << std::endl;
         std::cout << "8 - Send message" << std::endl;
         std::cout << "9 - Show history" << std::endl;
+        std::cout << "--- auto-test ---" << std::endl;
+        std::cout << "10 - Concurrency test" << std::endl;
         std::cout << "0 - Exit" << std::endl;
         std::cout << "> ";
 
@@ -266,6 +312,7 @@ int main() {
         case 7: DoListMembers(); break;
         case 8: DoSendMessage(); break;
         case 9: DoHistory(); break;
+        case 10: DoConcurrencyTest(); break;
         default: std::cout << "  Unknown option" << std::endl; break;
         }
     }
