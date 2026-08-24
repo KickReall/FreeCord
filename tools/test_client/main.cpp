@@ -1,11 +1,10 @@
 #include <iostream>
 #include <string>
+#include <thread>
+#include <atomic>
+#include <mutex>
 #include <winsock2.h>
 #include <ws2tcpip.h>
-
-#include <thread>
-#include <chrono>
-#include <atomic>
 
 #include "WinsockGuard.h"
 #include "TcpFramer.h"
@@ -13,309 +12,194 @@
 #include "AuthMessages.h"
 #include "RoomMessages.h"
 #include "MessageMessages.h"
+#include "ChatMessages.h"
 
-constexpr const char* SERVICE_HOST = "127.0.0.1";
-constexpr int AUTH_SERVICE_PORT = 6000;  // было 6001 — теперь идём через gateway
-constexpr int ROOM_SERVICE_PORT = 6002;
-constexpr int MESSAGE_SERVICE_PORT = 6003;
+constexpr const char* GATEWAY_HOST = "127.0.0.1";
+constexpr int GATEWAY_PORT = 6000;
 
-// Текущий залогиненный пользователь. 0 = не залогинен.
-int64_t g_currentUserId = 0;
+SOCKET g_socket = INVALID_SOCKET;
+std::mutex g_sendMutex;          // клиент тоже пишет из разных мест — защищаем отправку
+std::atomic<bool> g_running{ true };
+std::atomic<int64_t> g_userId{ 0 };
 
-SOCKET ConnectTo(int port) {
-    SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (sock == INVALID_SOCKET) return INVALID_SOCKET;
-
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    inet_pton(AF_INET, SERVICE_HOST, &addr.sin_addr);
-
-    if (connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
-        closesocket(sock);
-        return INVALID_SOCKET;
-    }
-    return sock;
+bool Send(MessageType type, const std::vector<uint8_t>& payload) {
+    std::lock_guard<std::mutex> lock(g_sendMutex);
+    return SendFrame(g_socket, static_cast<uint16_t>(type), 0, payload) == FrameResult::Ok;
 }
 
-// Отправляет запрос, ждёт ответ. Возвращает false при любой сетевой ошибке.
-bool Exchange(int port, MessageType requestType, const std::vector<uint8_t>& payload,
-    MessageType expectedResponseType, Frame& outResponse) {
-    SOCKET sock = ConnectTo(port);
-    if (sock == INVALID_SOCKET) {
-        std::cerr << "  [!] Failed to connect to port " << port << ". Is the service running?" << std::endl;
-        return false;
-    }
+// --- Обработка входящих кадров (работает в отдельном потоке) ---
 
-    if (SendFrame(sock, static_cast<uint16_t>(requestType), 1, payload) != FrameResult::Ok) {
-        std::cerr << "  [!] Failed to send request" << std::endl;
-        closesocket(sock);
-        return false;
+void HandleFrame(const Frame& frame) {
+    switch (static_cast<MessageType>(frame.messageType)) {
+    case MessageType::AuthResponse: {
+        auto p = AuthResponsePayload::Deserialize(frame.payload);
+        if (p.status == 0) {
+            g_userId = p.userId;
+            std::cout << "\n  [+] Logged in as userId=" << p.userId << std::endl;
+        }
+        else {
+            std::cout << "\n  [!] Login failed (status=" << static_cast<int>(p.status) << ")" << std::endl;
+        }
+        break;
     }
-
-    if (ReceiveFrame(sock, outResponse) != FrameResult::Ok) {
-        std::cerr << "  [!] Failed to receive response" << std::endl;
-        closesocket(sock);
-        return false;
+    case MessageType::RegisterResponse: {
+        auto p = AuthResponsePayload::Deserialize(frame.payload);
+        std::cout << "\n  " << (p.status == 0
+            ? "[+] Registered, userId=" + std::to_string(p.userId)
+            : "[!] Registration failed (username taken?)") << std::endl;
+        break;
     }
-
-    closesocket(sock);
-
-    if (outResponse.messageType != static_cast<uint16_t>(expectedResponseType)) {
-        std::cerr << "  [!] Unexpected messageType: " << outResponse.messageType << std::endl;
-        return false;
+    case MessageType::RoomCreateResponse: {
+        auto p = RoomCreateResponsePayload::Deserialize(frame.payload);
+        std::cout << "\n  " << (p.status == 0
+            ? "[+] Room created, roomId=" + std::to_string(p.roomId)
+            : "[!] Room name taken") << std::endl;
+        break;
     }
-    return true;
+    case MessageType::RoomListResponse: {
+        auto p = RoomListResponsePayload::Deserialize(frame.payload);
+        std::cout << "\n  --- rooms ---" << std::endl;
+        if (p.rooms.empty()) std::cout << "  (none)" << std::endl;
+        for (const auto& r : p.rooms) {
+            std::cout << "  [" << r.id << "] " << r.name << std::endl;
+        }
+        break;
+    }
+    case MessageType::JoinRoomResponse:
+    case MessageType::RoomLeaveResponse: {
+        auto p = StatusResponsePayload::Deserialize(frame.payload);
+        const char* msg[] = { "[+] OK", "[!] Room not found", "[!] Membership conflict" };
+        std::cout << "\n  " << (p.status < 3 ? msg[p.status] : "[!] Error") << std::endl;
+        break;
+    }
+    case MessageType::HistoryResponse: {
+        auto p = HistoryResponsePayload::Deserialize(frame.payload);
+        std::cout << "\n  --- history ---" << std::endl;
+        if (p.messages.empty()) std::cout << "  (empty)" << std::endl;
+        for (const auto& m : p.messages) {
+            std::cout << "  [" << m.id << "] user" << m.senderId << ": " << m.text << std::endl;
+        }
+        break;
+    }
+    case MessageType::TextMessage: {
+        auto p = BroadcastTextMessagePayload::Deserialize(frame.payload);
+        std::cout << "\n  <room " << p.roomId << "> " << p.senderName << ": " << p.text << std::endl;
+        std::cout << "> " << std::flush;   // возвращаем приглашение, его затёрло выводом
+        break;
+    }
+    case MessageType::Pong:
+        std::cout << "\n  [+] Pong" << std::endl;
+        break;
+    default:
+        std::cout << "\n  [?] Unhandled messageType 0x" << std::hex
+            << frame.messageType << std::dec << std::endl;
+        break;
+    }
 }
 
-// --- Auth ---
-
-void DoAuth(MessageType requestType, MessageType responseType) {
-    std::string username, password;
-    std::cout << "  Username: "; std::cin >> username;
-    std::cout << "  Password: "; std::cin >> password;
-
-    AuthRequestPayload request;
-    request.username = username;
-    request.password = password;
-
-    Frame response;
-    if (!Exchange(AUTH_SERVICE_PORT, requestType, request.Serialize(), responseType, response)) return;
-
-    auto payload = AuthResponsePayload::Deserialize(response.payload);
-    std::cout << "  status = " << static_cast<int>(payload.status)
-        << (payload.status == 0 ? " (success)" : " (failed)") << std::endl;
-    std::cout << "  userId = " << payload.userId << std::endl;
-
-    if (payload.status == 0 && requestType == MessageType::AuthRequest) {
-        g_currentUserId = payload.userId;
-        std::cout << "  [i] Logged in as userId=" << g_currentUserId << std::endl;
+void ReceiveThread() {
+    while (g_running) {
+        Frame frame;
+        FrameResult result = ReceiveFrame(g_socket, frame);
+        if (result != FrameResult::Ok) {
+            if (g_running) std::cout << "\n  [!] Connection lost" << std::endl;
+            g_running = false;
+            break;
+        }
+        HandleFrame(frame);
     }
 }
 
-// --- Rooms ---
+// --- Команды пользователя ---
+
+void DoAuth(bool isRegister) {
+    AuthRequestPayload p;
+    std::cout << "  Username: "; std::cin >> p.username;
+    std::cout << "  Password: "; std::cin >> p.password;
+    Send(isRegister ? MessageType::RegisterRequest : MessageType::AuthRequest, p.Serialize());
+}
 
 void DoCreateRoom() {
-    std::string name;
-    std::cout << "  Room name: "; std::cin >> name;
-
-    RoomCreateRequestPayload request;
-    request.name = name;
-
-    Frame response;
-    if (!Exchange(ROOM_SERVICE_PORT, MessageType::RoomCreateRequest, request.Serialize(),
-        MessageType::RoomCreateResponse, response)) return;
-
-    auto payload = RoomCreateResponsePayload::Deserialize(response.payload);
-    if (payload.status == 0) {
-        std::cout << "  Room created, roomId = " << payload.roomId << std::endl;
-    }
-    else {
-        std::cout << "  Failed: room name already taken" << std::endl;
-    }
+    RoomCreateRequestPayload p;
+    std::cout << "  Room name: "; std::cin >> p.name;
+    Send(MessageType::RoomCreateRequest, p.Serialize());
 }
 
-void DoListRooms() {
-    Frame response;
-    if (!Exchange(ROOM_SERVICE_PORT, MessageType::RoomListRequest, {},
-        MessageType::RoomListResponse, response)) return;
-
-    auto payload = RoomListResponsePayload::Deserialize(response.payload);
-    if (payload.rooms.empty()) {
-        std::cout << "  (no rooms yet)" << std::endl;
-        return;
-    }
-    for (const auto& room : payload.rooms) {
-        std::cout << "  [" << room.id << "] " << room.name << std::endl;
-    }
-}
-
-void DoMembership(MessageType requestType, MessageType responseType, const char* actionName) {
-    if (g_currentUserId == 0) {
-        std::cout << "  [!] You must log in first (option 2)" << std::endl;
-        return;
-    }
-
-    int64_t roomId = 0;
-    std::cout << "  Room id: "; std::cin >> roomId;
-
-    RoomMembershipRequestPayload request;
-    request.roomId = roomId;
-    request.userId = g_currentUserId;
-
-    Frame response;
-    if (!Exchange(ROOM_SERVICE_PORT, requestType, request.Serialize(), responseType, response)) return;
-
-    auto payload = StatusResponsePayload::Deserialize(response.payload);
-    switch (payload.status) {
-    case 0: std::cout << "  " << actionName << " OK" << std::endl; break;
-    case 1: std::cout << "  Failed: room not found" << std::endl; break;
-    case 2: std::cout << "  Failed: membership state conflict (already member / not a member)" << std::endl; break;
-    default: std::cout << "  Unknown status: " << static_cast<int>(payload.status) << std::endl; break;
-    }
-}
-
-void DoListMembers() {
-    int64_t roomId = 0;
-    std::cout << "  Room id: "; std::cin >> roomId;
-
-    RoomMembersRequestPayload request;
-    request.roomId = roomId;
-
-    Frame response;
-    if (!Exchange(ROOM_SERVICE_PORT, MessageType::RoomMembersRequest, request.Serialize(),
-        MessageType::RoomMembersResponse, response)) return;
-
-    auto payload = RoomMembersResponsePayload::Deserialize(response.payload);
-    if (payload.userIds.empty()) {
-        std::cout << "  (no members)" << std::endl;
-        return;
-    }
-    for (int64_t id : payload.userIds) {
-        std::cout << "  userId = " << id << std::endl;
-    }
+void DoMembership(bool isJoin) {
+    RoomMembershipRequestPayload p;
+    std::cout << "  Room id: "; std::cin >> p.roomId;
+    p.userId = 0;   // gateway подставит из сессии
+    Send(isJoin ? MessageType::JoinRoom : MessageType::LeaveRoom, p.Serialize());
 }
 
 void DoSendMessage() {
-    if (g_currentUserId == 0) {
-        std::cout << "  [!] You must log in first (option 2)" << std::endl;
-        return;
-    }
-
-    int64_t roomId = 0;
-    std::cout << "  Room id: "; std::cin >> roomId;
-    std::cin.ignore(); // сбрасываем перевод строки, иначе getline прочитает пустую строку
-
-    std::string text;
+    ClientTextMessagePayload p;
+    std::cout << "  Room id: "; std::cin >> p.roomId;
+    std::cin.ignore();
     std::cout << "  Text: ";
-    std::getline(std::cin, text);
-
-    SendMessageRequestPayload request;
-    request.roomId = roomId;
-    request.senderId = g_currentUserId;
-    request.text = text;
-
-    Frame response;
-    if (!Exchange(MESSAGE_SERVICE_PORT, MessageType::SendMessageRequest, request.Serialize(),
-        MessageType::SendMessageResponse, response)) return;
-
-    auto payload = SendMessageResponsePayload::Deserialize(response.payload);
-    switch (payload.status) {
-    case 0: std::cout << "  Sent, messageId = " << payload.messageId << std::endl; break;
-    case 1: std::cout << "  Failed: empty text" << std::endl; break;
-    case 2: std::cout << "  Failed: text too long" << std::endl; break;
-    default: std::cout << "  Failed: status " << static_cast<int>(payload.status) << std::endl; break;
-    }
+    std::getline(std::cin, p.text);
+    Send(MessageType::TextMessage, p.Serialize());
 }
 
 void DoHistory() {
-    int64_t roomId = 0;
-    std::cout << "  Room id: "; std::cin >> roomId;
-
-    HistoryRequestPayload request;
-    request.roomId = roomId;
-    request.limit = 50;
-
-    Frame response;
-    if (!Exchange(MESSAGE_SERVICE_PORT, MessageType::HistoryRequest, request.Serialize(),
-        MessageType::HistoryResponse, response)) return;
-
-    auto payload = HistoryResponsePayload::Deserialize(response.payload);
-    if (payload.messages.empty()) {
-        std::cout << "  (no messages)" << std::endl;
-        return;
-    }
-    for (const auto& msg : payload.messages) {
-        std::cout << "  [" << msg.id << "] user" << msg.senderId << ": " << msg.text << std::endl;
-    }
-}
-
-void DoConcurrencyTest() {
-    std::string username, password;
-    std::cout << "  Username: "; std::cin >> username;
-    std::cout << "  Password: "; std::cin >> password;
-
-    int threadCount = 0;
-    std::cout << "  Parallel logins: "; std::cin >> threadCount;
-    if (threadCount < 1) return;
-
-    AuthRequestPayload request;
-    request.username = username;
-    request.password = password;
-    std::vector<uint8_t> payload = request.Serialize();
-
-    std::atomic<int> successCount{ 0 };
-    std::vector<std::thread> threads;
-
-    auto start = std::chrono::steady_clock::now();
-
-    for (int i = 0; i < threadCount; ++i) {
-        threads.emplace_back([&payload, &successCount]() {
-            Frame response;
-            if (Exchange(AUTH_SERVICE_PORT, MessageType::AuthRequest, payload,
-                MessageType::AuthResponse, response)) {
-                auto r = AuthResponsePayload::Deserialize(response.payload);
-                if (r.status == 0) successCount++;
-            }
-            });
-    }
-
-    for (auto& t : threads) t.join();
-
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - start).count();
-
-    std::cout << "  " << successCount << "/" << threadCount << " logins succeeded in "
-        << elapsed << " ms" << std::endl;
-    std::cout << "  (~" << (elapsed / threadCount) << " ms per login on average)" << std::endl;
+    HistoryRequestPayload p;
+    std::cout << "  Room id: "; std::cin >> p.roomId;
+    p.limit = 50;
+    Send(MessageType::HistoryRequest, p.Serialize());
 }
 
 int main() {
     WinsockGuard winsock;
     if (!winsock.IsInitialized()) {
-        std::cerr << "[client] Failed to initialize Winsock" << std::endl;
+        std::cerr << "[client] Winsock init failed" << std::endl;
         return 1;
     }
 
-    while (true) {
-        std::cout << "\n=== FreeCord test client ===" << std::endl;
-        std::cout << "  current user: "
-            << (g_currentUserId == 0 ? "(not logged in)" : std::to_string(g_currentUserId)) << std::endl;
-        std::cout << "--- auth ---" << std::endl;
-        std::cout << "1 - Register" << std::endl;
-        std::cout << "2 - Login" << std::endl;
-        std::cout << "--- rooms ---" << std::endl;
-        std::cout << "3 - Create room" << std::endl;
-        std::cout << "4 - List rooms" << std::endl;
-        std::cout << "5 - Join room" << std::endl;
-        std::cout << "6 - Leave room" << std::endl;
-        std::cout << "7 - List members" << std::endl;
-        std::cout << "--- messages ---" << std::endl;
-        std::cout << "8 - Send message" << std::endl;
-        std::cout << "9 - Show history" << std::endl;
-        std::cout << "--- auto-test ---" << std::endl;
-        std::cout << "10 - Concurrency test" << std::endl;
-        std::cout << "0 - Exit" << std::endl;
+    g_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(GATEWAY_PORT);
+    inet_pton(AF_INET, GATEWAY_HOST, &addr.sin_addr);
+
+    if (connect(g_socket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
+        std::cerr << "[client] Cannot connect to gateway on port " << GATEWAY_PORT << std::endl;
+        return 1;
+    }
+    std::cout << "[client] Connected to gateway" << std::endl;
+
+    std::thread receiver(ReceiveThread);
+
+    while (g_running) {
+        std::cout << "\n=== FreeCord ===  user: "
+            << (g_userId == 0 ? "(not logged in)" : std::to_string(g_userId)) << std::endl;
+        std::cout << "1-Register  2-Login  3-Create room  4-List rooms" << std::endl;
+        std::cout << "5-Join  6-Leave  7-Send message  8-History  9-Ping  0-Exit" << std::endl;
         std::cout << "> ";
 
         int choice = 0;
         if (!(std::cin >> choice)) break;
 
         switch (choice) {
-        case 0: std::cout << "[client] Bye" << std::endl; return 0;
-        case 1: DoAuth(MessageType::RegisterRequest, MessageType::RegisterResponse); break;
-        case 2: DoAuth(MessageType::AuthRequest, MessageType::AuthResponse); break;
-        case 3: DoCreateRoom(); break;
-        case 4: DoListRooms(); break;
-        case 5: DoMembership(MessageType::RoomJoinRequest, MessageType::RoomJoinResponse, "Joined"); break;
-        case 6: DoMembership(MessageType::RoomLeaveRequest, MessageType::RoomLeaveResponse, "Left"); break;
-        case 7: DoListMembers(); break;
-        case 8: DoSendMessage(); break;
-        case 9: DoHistory(); break;
-        case 10: DoConcurrencyTest(); break;
+        case 0: g_running = false; break;
+        case 1: DoAuth(true);       break;
+        case 2: DoAuth(false);      break;
+        case 3: DoCreateRoom();     break;
+        case 4: Send(MessageType::RoomListRequest, {}); break;
+        case 5: DoMembership(true);  break;
+        case 6: DoMembership(false); break;
+        case 7: DoSendMessage();    break;
+        case 8: DoHistory();        break;
+        case 9: Send(MessageType::Ping, {}); break;
         default: std::cout << "  Unknown option" << std::endl; break;
         }
+
+        // Даём потоку-приёмнику успеть напечатать ответ до перерисовки меню.
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 
+    g_running = false;
+    closesocket(g_socket);
+    receiver.join();
+    std::cout << "[client] Bye" << std::endl;
     return 0;
 }

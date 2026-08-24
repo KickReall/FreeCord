@@ -1,24 +1,22 @@
 #include "SessionManager.h"
 
-uint64_t SessionManager::AddSession(int64_t userId, const std::string& username, SOCKET socket) {
+SessionPtr SessionManager::AddSession(int64_t userId, const std::string& username, SOCKET socket) {
     std::lock_guard<std::mutex> lock(m_mutex);
 
-    // Если пользователь уже был онлайн (переподключился), старую сессию выбрасываем.
     auto existing = m_userToSession.find(userId);
     if (existing != m_userToSession.end()) {
         m_sessions.erase(existing->second);
     }
 
-    uint64_t sessionId = m_nextSessionId++;
-    Session session;
-    session.sessionId = sessionId;
-    session.userId = userId;
-    session.username = username;
-    session.socket = socket;
+    auto session = std::make_shared<Session>();
+    session->sessionId = m_nextSessionId++;
+    session->userId = userId;
+    session->username = username;
+    session->socket = socket;
 
-    m_sessions[sessionId] = session;
-    m_userToSession[userId] = sessionId;
-    return sessionId;
+    m_sessions[session->sessionId] = session;
+    m_userToSession[userId] = session->sessionId;
+    return session;
 }
 
 void SessionManager::RemoveSession(uint64_t sessionId) {
@@ -27,24 +25,24 @@ void SessionManager::RemoveSession(uint64_t sessionId) {
     auto it = m_sessions.find(sessionId);
     if (it == m_sessions.end()) return;
 
-    m_userToSession.erase(it->second.userId);
+    m_userToSession.erase(it->second->userId);
     m_sessions.erase(it);
 }
 
-std::vector<SOCKET> SessionManager::GetSocketsForUsers(const std::vector<int64_t>& userIds) {
+std::vector<SessionPtr> SessionManager::GetSessionsForUsers(const std::vector<int64_t>& userIds) {
     std::lock_guard<std::mutex> lock(m_mutex);
 
-    std::vector<SOCKET> sockets;
+    std::vector<SessionPtr> result;
     for (int64_t userId : userIds) {
         auto sessionIt = m_userToSession.find(userId);
-        if (sessionIt == m_userToSession.end()) continue; // не онлайн
+        if (sessionIt == m_userToSession.end()) continue;
 
         auto it = m_sessions.find(sessionIt->second);
         if (it != m_sessions.end()) {
-            sockets.push_back(it->second.socket);
+            result.push_back(it->second);
         }
     }
-    return sockets;
+    return result;
 }
 
 size_t SessionManager::OnlineCount() {
