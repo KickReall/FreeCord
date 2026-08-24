@@ -1,0 +1,2 @@
+add_executable(message_service main.cpp)
+target_link_libraries(message_service PRIVATE common)
