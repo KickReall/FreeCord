@@ -18,6 +18,8 @@ constexpr size_t CONTROL_HEADER_SIZE = sizeof(ControlHeader);
 //   0x3000–0x3FFF — Gateway <-> Message (internal)
 enum class MessageType : uint16_t {
     // --- Client <-> Gateway ---
+    RegisterRequest = 0x0003,  // клиент -> gateway -> auth: username + password
+    RegisterResponse = 0x0004,  // ответный статус + userId
     AuthRequest = 0x0001,  // клиент -> gateway: логин + пароль
     AuthResponse = 0x0002,  // gateway -> клиент: статус + sessionId + userId
 
