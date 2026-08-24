@@ -30,6 +30,7 @@ enum class MessageType : uint16_t {
 
     TextMessage = 0x0020,  // в обе стороны: roomId, senderId, timestamp, текст
 
+    UserRegistered = 0x0041,  // gateway -> все: зарегистрировался новый пользователь
     UserJoined = 0x0030,  // gateway -> клиент: кто-то зашёл в комнату
     UserLeft = 0x0031,  // gateway -> клиент: кто-то вышел из комнаты
 

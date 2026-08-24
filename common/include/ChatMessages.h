@@ -99,3 +99,23 @@ struct RoomCreatedPayload {
         return r;
     }
 };
+
+// Gateway -> все клиенты: в системе появился новый пользователь
+struct UserRegisteredPayload {
+    int64_t userId = 0;
+    std::string username;
+
+    std::vector<uint8_t> Serialize() const {
+        std::vector<uint8_t> buffer;
+        WriteScalar(buffer, userId);
+        WriteString(buffer, username);
+        return buffer;
+    }
+    static UserRegisteredPayload Deserialize(const std::vector<uint8_t>& buffer) {
+        size_t offset = 0;
+        UserRegisteredPayload r;
+        r.userId = ReadScalar<int64_t>(buffer, offset);
+        r.username = ReadString(buffer, offset);
+        return r;
+    }
+};

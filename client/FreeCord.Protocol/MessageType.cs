@@ -14,7 +14,8 @@ public enum MessageType : ushort
 
 	TextMessage = 0x0020,
 
-	UserJoined = 0x0030,
+    UserRegistered = 0x0041,
+    UserJoined = 0x0030,
 	UserLeft = 0x0031,
 
 	Ping = 0x00F0,

@@ -27,6 +27,7 @@ public sealed class FreeCordConnection : IAsyncDisposable
     public event Action<AuthResponse>? AuthResponseReceived;
     public event Action<AuthResponse>? RegisterResponseReceived;
     public event Action<RoomCreatedNotification>? RoomCreated;
+    public event Action<UserRegisteredNotification>? UserRegistered;
     public event Action<RoomCreateResponse>? RoomCreateResponseReceived;
     public event Action<RoomListResponse>? RoomListReceived;
     public event Action<StatusResponse>? JoinResponseReceived;
@@ -134,6 +135,9 @@ public sealed class FreeCordConnection : IAsyncDisposable
                 break;
             case MessageType.TextMessage:
                 MessageReceived?.Invoke(BroadcastTextMessage.Deserialize(frame.Payload));
+                break;
+            case MessageType.UserRegistered:
+                UserRegistered?.Invoke(UserRegisteredNotification.Deserialize(frame.Payload));
                 break;
             case MessageType.UserJoined:
                 UserJoined?.Invoke(UserPresence.Deserialize(frame.Payload));

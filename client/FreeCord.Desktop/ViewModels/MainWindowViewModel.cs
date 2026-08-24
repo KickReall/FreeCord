@@ -47,6 +47,9 @@ public partial class MainWindowViewModel : ViewModelBase
         _connection.RegisterResponseReceived += r => OnUi(() =>
             Status = r.IsSuccess ? "Registered, now log in" : "Registration failed: username taken");
 
+        _connection.UserRegistered += u => OnUi(() =>
+            Status = $"Новый пользователь: {u.Username}");
+
         _connection.RoomCreated += r => OnUi(() =>
         {
             // Защита от дубликата: список мог обновиться другим путём

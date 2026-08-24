@@ -18,6 +18,7 @@ constexpr const char* SERVICE_HOST = "127.0.0.1";
 constexpr int AUTH_SERVICE_PORT = 6001;
 constexpr int ROOM_SERVICE_PORT = 6002;
 constexpr int MESSAGE_SERVICE_PORT = 6003;
+constexpr int64_t SYSTEM_ROOM_ID = 1;
 
 SessionManager g_sessions;
 
@@ -75,6 +76,41 @@ void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
             response.sessionId = ctx.session->sessionId;
             std::cout << "[gateway] '" << request.username << "' logged in (userId="
                 << response.userId << "), online=" << g_sessions.OnlineCount() << std::endl;
+        }
+
+        // Новый пользователь — пишем в системную комнату и уведомляем всех
+        if (response.status == 0 && isRegister) {
+            std::string text = "Новый пользователь: " + request.username;
+
+            SendMessageRequestPayload sysMessage;
+            sysMessage.roomId = SYSTEM_ROOM_ID;
+            sysMessage.senderId = 0;   // 0 = система, не реальный пользователь
+            sysMessage.text = text;
+
+            Frame saveResponse;
+            if (CallService(SERVICE_HOST, MESSAGE_SERVICE_PORT, MessageType::SendMessageRequest,
+                sysMessage.Serialize(), MessageType::SendMessageResponse, saveResponse)) {
+
+                auto saved = SendMessageResponsePayload::Deserialize(saveResponse.payload);
+                if (saved.status == 0) {
+                    BroadcastTextMessagePayload broadcast;
+                    broadcast.messageId = saved.messageId;
+                    broadcast.roomId = SYSTEM_ROOM_ID;
+                    broadcast.senderId = 0;
+                    broadcast.senderName = "System";
+                    broadcast.timestamp = saved.timestamp;
+                    broadcast.text = text;
+
+                    BroadcastToRoom(SYSTEM_ROOM_ID, MessageType::TextMessage, broadcast.Serialize());
+                }
+            }
+
+            UserRegisteredPayload notification;
+            notification.userId = response.userId;
+            notification.username = request.username;
+            BroadcastToAll(MessageType::UserRegistered, notification.Serialize());
+
+            std::cout << "[gateway] New user registered: " << request.username << std::endl;
         }
     }
 

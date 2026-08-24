@@ -210,3 +210,19 @@ public sealed class RoomCreatedNotification
         };
     }
 }
+
+public sealed class UserRegisteredNotification
+{
+    public long UserId { get; init; }
+    public string Username { get; init; } = "";
+
+    public static UserRegisteredNotification Deserialize(byte[] data)
+    {
+        using var r = new PayloadReader(data);
+        return new UserRegisteredNotification
+        {
+            UserId = r.ReadInt64(),
+            Username = r.ReadString()
+        };
+    }
+}
