@@ -5,3 +5,5 @@ out/
 *.vcxproj
 *.vcxproj.filters
 *.vcxproj.user
+bin/
+obj/

@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="FreeCord.ConsoleTest/FreeCord.ConsoleTest.csproj" />
+  <Project Path="FreeCord.Protocol/FreeCord.Protocol.csproj" />
+</Solution>
