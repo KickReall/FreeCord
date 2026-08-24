@@ -41,10 +41,16 @@ enum class MessageType : uint16_t {
     AuthenticateResponse = 0x1001,  // auth -> gateway: статус + userId + sessionId
 
     // --- Gateway <-> Room (internal) ---
-    RoomJoinRequest = 0x2000,  // gateway -> room
-    RoomJoinResponse = 0x2001,  // room -> gateway
-    RoomLeaveRequest = 0x2002,  // gateway -> room
-    RoomLeaveResponse = 0x2003,  // room -> gateway
+    RoomCreateRequest = 0x2000,  // gateway -> room: name
+    RoomCreateResponse = 0x2001,  // room -> gateway: status + roomId
+    RoomJoinRequest = 0x2002,  // gateway -> room: roomId + userId
+    RoomJoinResponse = 0x2003,  // room -> gateway: status
+    RoomLeaveRequest = 0x2004,  // gateway -> room: roomId + userId
+    RoomLeaveResponse = 0x2005,  // room -> gateway: status
+    RoomListRequest = 0x2006,  // gateway -> room: (пусто) — все комнаты
+    RoomListResponse = 0x2007,  // room -> gateway: список комнат
+    RoomMembersRequest = 0x2008,  // gateway -> room: roomId
+    RoomMembersResponse = 0x2009,  // room -> gateway: список userId участников
 
     // --- Gateway <-> Message (internal) ---
     SendMessageRequest = 0x3000,  // gateway -> message: сохранить + разослать
