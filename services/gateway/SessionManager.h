@@ -23,6 +23,8 @@ public:
     SessionPtr AddSession(int64_t userId, const std::string& username, SOCKET socket);
     void RemoveSession(uint64_t sessionId);
     std::vector<SessionPtr> GetSessionsForUsers(const std::vector<int64_t>& userIds);
+    // Все активные сессии — для рассылки глобальных событий
+    std::vector<SessionPtr> GetAllSessions();
     size_t OnlineCount();
 
 private:

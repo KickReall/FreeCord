@@ -32,6 +32,16 @@ bool SendToSession(const SessionPtr& session, MessageType type, const std::vecto
     return SendFrame(session->socket, static_cast<uint16_t>(type), 0, payload) == FrameResult::Ok;
 }
 
+// Разослать всем залогиненным клиентам, независимо от комнат.
+int BroadcastToAll(MessageType type, const std::vector<uint8_t>& payload, int64_t excludeUserId = 0) {
+    int delivered = 0;
+    for (const auto& session : g_sessions.GetAllSessions()) {
+        if (session->userId == excludeUserId) continue;
+        if (SendToSession(session, type, payload)) delivered++;
+    }
+    return delivered;
+}
+
 // Разослать всем онлайн-участникам комнаты. excludeUserId=0 — отправить всем без исключений.
 int BroadcastToRoom(int64_t roomId, MessageType type, const std::vector<uint8_t>& payload, int64_t excludeUserId = 0) {
     RoomMembersRequestPayload membersRequest;
@@ -139,7 +149,24 @@ void HandleRoomCreate(ClientContext& ctx, const Frame& frame) {
         MessageType::RoomCreateResponse, roomResponse)) {
         return;
     }
+
+    // Ответ создателю
     SendToSession(ctx.session, MessageType::RoomCreateResponse, roomResponse.payload);
+
+    // Если создание удалось — уведомляем остальных
+    auto created = RoomCreateResponsePayload::Deserialize(roomResponse.payload);
+    if (created.status == 0) {
+        auto request = RoomCreateRequestPayload::Deserialize(frame.payload);
+
+        RoomCreatedPayload notification;
+        notification.roomId = created.roomId;
+        notification.name = request.name;
+
+        // Создателя исключаем: он уже узнал о комнате из RoomCreateResponse
+        int notified = BroadcastToAll(MessageType::RoomCreated, notification.Serialize(), ctx.session->userId);
+        std::cout << "[gateway] Room '" << request.name << "' (id=" << created.roomId
+            << ") created, notified " << notified << " users" << std::endl;
+    }
 }
 
 void HandleHistory(ClientContext& ctx, const Frame& frame) {

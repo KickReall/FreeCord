@@ -21,8 +21,9 @@ public enum MessageType : ushort
 	Pong = 0x00F1,
 	Error = 0x00FF,
 
-	// Проксируются gateway во внутренние сервисы
-	RoomCreateRequest = 0x2000,
+    // Проксируются gateway во внутренние сервисы
+    RoomCreated = 0x0040,
+    RoomCreateRequest = 0x2000,
 	RoomCreateResponse = 0x2001,
 	RoomLeaveResponse = 0x2005,
 	RoomListRequest = 0x2006,

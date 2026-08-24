@@ -50,6 +50,17 @@ std::vector<SessionPtr> SessionManager::GetSessionsForUsers(const std::vector<in
     return result;
 }
 
+std::vector<SessionPtr> SessionManager::GetAllSessions() {
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    std::vector<SessionPtr> result;
+    result.reserve(m_sessions.size());
+    for (const auto& [id, session] : m_sessions) {
+        result.push_back(session);
+    }
+    return result;
+}
+
 size_t SessionManager::OnlineCount() {
     std::lock_guard<std::mutex> lock(m_mutex);
     return m_sessions.size();

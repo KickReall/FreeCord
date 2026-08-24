@@ -194,3 +194,19 @@ public sealed class UserPresence
         };
     }
 }
+
+public sealed class RoomCreatedNotification
+{
+    public long RoomId { get; init; }
+    public string Name { get; init; } = "";
+
+    public static RoomCreatedNotification Deserialize(byte[] data)
+    {
+        using var r = new PayloadReader(data);
+        return new RoomCreatedNotification
+        {
+            RoomId = r.ReadInt64(),
+            Name = r.ReadString()
+        };
+    }
+}

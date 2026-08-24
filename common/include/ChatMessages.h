@@ -79,3 +79,23 @@ struct UserPresencePayload {
         return r;
     }
 };
+
+// Gateway -> все подключённые клиенты: создана новая комната
+struct RoomCreatedPayload {
+    int64_t roomId = 0;
+    std::string name;
+
+    std::vector<uint8_t> Serialize() const {
+        std::vector<uint8_t> buffer;
+        WriteScalar(buffer, roomId);
+        WriteString(buffer, name);
+        return buffer;
+    }
+    static RoomCreatedPayload Deserialize(const std::vector<uint8_t>& buffer) {
+        size_t offset = 0;
+        RoomCreatedPayload r;
+        r.roomId = ReadScalar<int64_t>(buffer, offset);
+        r.name = ReadString(buffer, offset);
+        return r;
+    }
+};

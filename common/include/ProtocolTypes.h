@@ -23,6 +23,7 @@ enum class MessageType : uint16_t {
     AuthRequest = 0x0001,  // клиент -> gateway: логин + пароль
     AuthResponse = 0x0002,  // gateway -> клиент: статус + sessionId + userId
 
+    RoomCreated = 0x0040,  // gateway -> все клиенты: появилась новая комната
     JoinRoom = 0x0010,  // клиент -> gateway: roomId
     JoinRoomResponse = 0x0011,  // gateway -> клиент: статус + список участников
     LeaveRoom = 0x0012,  // клиент -> gateway: roomId

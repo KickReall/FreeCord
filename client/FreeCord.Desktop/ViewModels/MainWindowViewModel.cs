@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Collections.ObjectModel;
 using System.Threading.Tasks;
 using Avalonia.Threading;
@@ -46,6 +47,13 @@ public partial class MainWindowViewModel : ViewModelBase
         _connection.RegisterResponseReceived += r => OnUi(() =>
             Status = r.IsSuccess ? "Registered, now log in" : "Registration failed: username taken");
 
+        _connection.RoomCreated += r => OnUi(() =>
+        {
+            // Защита от дубликата: список мог обновиться другим путём
+            if (Rooms.Any(room => room.Id == r.RoomId)) return;
+            Rooms.Add(new RoomInfo(r.RoomId, r.Name));
+        });
+
         _connection.RoomListReceived += r => OnUi(() =>
         {
             Rooms.Clear();
@@ -74,13 +82,23 @@ public partial class MainWindowViewModel : ViewModelBase
         });
 
         _connection.MessageReceived += m => OnUi(() =>
-            Messages.Add($"{m.SenderName}: {m.Text}"));
+        {
+            // Показываем только если сообщение из открытой сейчас комнаты
+            if (m.RoomId != SelectedRoom?.Id) return;
+            Messages.Add($"{m.SenderName}: {m.Text}");
+        });
 
         _connection.UserJoined += p => OnUi(() =>
-            Messages.Add($"— {p.Username} joined —"));
+        {
+            if (p.RoomId != SelectedRoom?.Id) return;
+            Messages.Add($"— {p.Username} joined —");
+        });
 
         _connection.UserLeft += p => OnUi(() =>
-            Messages.Add($"— {p.Username} left —"));
+        {
+            if (p.RoomId != SelectedRoom?.Id) return;
+            Messages.Add($"— {p.Username} left —");
+        });
 
         _connection.Disconnected += ex => OnUi(() =>
         {
