@@ -10,3 +10,42 @@ struct ControlHeader {
 #pragma pack(pop)
 
 constexpr size_t CONTROL_HEADER_SIZE = sizeof(ControlHeader);
+
+// Диапазоны messageType по слоям, чтобы легко отличить, откуда пришло сообщение:
+//   0x0000–0x0FFF — Client <-> Gateway
+//   0x1000–0x1FFF — Gateway <-> Auth (internal)
+//   0x2000–0x2FFF — Gateway <-> Room (internal)
+//   0x3000–0x3FFF — Gateway <-> Message (internal)
+enum class MessageType : uint16_t {
+    // --- Client <-> Gateway ---
+    AuthRequest = 0x0001,  // клиент -> gateway: логин + пароль
+    AuthResponse = 0x0002,  // gateway -> клиент: статус + sessionId + userId
+
+    JoinRoom = 0x0010,  // клиент -> gateway: roomId
+    JoinRoomResponse = 0x0011,  // gateway -> клиент: статус + список участников
+    LeaveRoom = 0x0012,  // клиент -> gateway: roomId
+
+    TextMessage = 0x0020,  // в обе стороны: roomId, senderId, timestamp, текст
+
+    UserJoined = 0x0030,  // gateway -> клиент: кто-то зашёл в комнату
+    UserLeft = 0x0031,  // gateway -> клиент: кто-то вышел из комнаты
+
+    Ping = 0x00F0,
+    Pong = 0x00F1,
+    Error = 0x00FF,  // code + сообщение об ошибке
+
+    // --- Gateway <-> Auth (internal) ---
+    AuthenticateRequest = 0x1000,  // gateway -> auth: проверить логин/пароль
+    AuthenticateResponse = 0x1001,  // auth -> gateway: статус + userId + sessionId
+
+    // --- Gateway <-> Room (internal) ---
+    RoomJoinRequest = 0x2000,  // gateway -> room
+    RoomJoinResponse = 0x2001,  // room -> gateway
+    RoomLeaveRequest = 0x2002,  // gateway -> room
+    RoomLeaveResponse = 0x2003,  // room -> gateway
+
+    // --- Gateway <-> Message (internal) ---
+    SendMessageRequest = 0x3000,  // gateway -> message: сохранить + разослать
+    SendMessageResponse = 0x3001,  // message -> gateway: статус + messageId
+    FanoutMessage = 0x3002,  // message -> gateway: разослать всем в комнате
+};
