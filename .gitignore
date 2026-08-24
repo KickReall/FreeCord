@@ -1,4 +1,7 @@
 build/
 out/
 .vs/
-*/db
+*.db
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
