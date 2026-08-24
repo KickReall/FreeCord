@@ -13,6 +13,7 @@ MessageRepository::MessageRepository(const std::string& dbPath)
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             room_id INTEGER NOT NULL,
             sender_id INTEGER NOT NULL,
+            sender_name TEXT NOT NULL DEFAULT '',
             text TEXT NOT NULL,
             timestamp INTEGER NOT NULL
         )
@@ -22,14 +23,17 @@ MessageRepository::MessageRepository(const std::string& dbPath)
     m_db.exec("CREATE INDEX IF NOT EXISTS idx_messages_room_time ON messages(room_id, timestamp)");
 }
 
-int64_t MessageRepository::SaveMessage(int64_t roomId, int64_t senderId, const std::string& text, int64_t timestamp) {
+int64_t MessageRepository::SaveMessage(int64_t roomId, int64_t senderId, const std::string& senderName,
+    const std::string& text, int64_t timestamp) {
     std::lock_guard<std::mutex> lock(m_mutex);
     try {
-        SQLite::Statement query(m_db, "INSERT INTO messages (room_id, sender_id, text, timestamp) VALUES (?, ?, ?, ?)");
+        SQLite::Statement query(m_db,
+            "INSERT INTO messages (room_id, sender_id, sender_name, text, timestamp) VALUES (?, ?, ?, ?, ?)");
         query.bind(1, roomId);
         query.bind(2, senderId);
-        query.bind(3, text);
-        query.bind(4, timestamp);
+        query.bind(3, senderName);
+        query.bind(4, text);
+        query.bind(5, timestamp);
         query.exec();
         return m_db.getLastInsertRowid();
     }
@@ -44,7 +48,7 @@ std::vector<ChatMessage> MessageRepository::GetHistory(int64_t roomId, uint32_t 
 
     // Берём ПОСЛЕДНИЕ limit сообщений — сортируем по убыванию, потом переворачиваем.
     SQLite::Statement query(m_db,
-        "SELECT id, room_id, sender_id, timestamp, text FROM messages "
+        "SELECT id, room_id, sender_id, sender_name, timestamp, text FROM messages "
         "WHERE room_id = ? ORDER BY timestamp DESC, id DESC LIMIT ?");
     query.bind(1, roomId);
     query.bind(2, static_cast<int>(limit));
@@ -54,8 +58,9 @@ std::vector<ChatMessage> MessageRepository::GetHistory(int64_t roomId, uint32_t 
         msg.id = query.getColumn(0).getInt64();
         msg.roomId = query.getColumn(1).getInt64();
         msg.senderId = query.getColumn(2).getInt64();
-        msg.timestamp = query.getColumn(3).getInt64();
-        msg.text = query.getColumn(4).getString();
+        msg.senderName = query.getColumn(3).getString();
+        msg.timestamp = query.getColumn(4).getInt64();
+        msg.text = query.getColumn(5).getString();
         result.push_back(msg);
     }
 

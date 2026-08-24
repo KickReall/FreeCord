@@ -84,7 +84,8 @@ void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
 
             SendMessageRequestPayload sysMessage;
             sysMessage.roomId = SYSTEM_ROOM_ID;
-            sysMessage.senderId = 0;   // 0 = система, не реальный пользователь
+            sysMessage.senderId = 0;
+            sysMessage.senderName = "System";
             sysMessage.text = text;
 
             Frame saveResponse;
@@ -200,6 +201,7 @@ void HandleTextMessage(ClientContext& ctx, const Frame& frame) {
     SendMessageRequestPayload saveRequest;
     saveRequest.roomId = clientMessage.roomId;
     saveRequest.senderId = ctx.session->userId;
+    saveRequest.senderName = ctx.session->username;
     saveRequest.text = clientMessage.text;
 
     Frame saveResponse;

@@ -75,12 +75,18 @@
                            Text="{Binding SelectedRoom.Name, FallbackValue='Select a room'}"
                            Margin="0,0,0,8"/>
 
-                <ScrollViewer Grid.Row="1">
+                <ScrollViewer Grid.Row="1" Name="MessagesScroll">
                     <ItemsControl ItemsSource="{Binding Messages}">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
-                                <TextBlock Text="{Binding}" Foreground="#DBDEE1"
-                                           TextWrapping="Wrap" Margin="0,2"/>
+                                <Grid ColumnDefinitions="Auto,*,Auto" Margin="0,3">
+                                    <TextBlock Grid.Column="0" Text="{Binding Author}"
+                                               Foreground="#8AB4F8" FontWeight="SemiBold"/>
+                                    <TextBlock Grid.Column="1" Text="{Binding Text}"
+                                               Foreground="#DBDEE1" TextWrapping="Wrap" Margin="8,0,8,0"/>
+                                    <TextBlock Grid.Column="2" Text="{Binding Time}"
+                                               Foreground="#6D6F78" FontSize="11" VerticalAlignment="Center"/>
+                                </Grid>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>

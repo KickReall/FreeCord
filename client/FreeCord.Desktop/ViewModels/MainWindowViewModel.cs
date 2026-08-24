@@ -27,7 +27,7 @@ public partial class MainWindowViewModel : ViewModelBase
     [ObservableProperty] private RoomInfo? _selectedRoom;
 
     public ObservableCollection<RoomInfo> Rooms { get; } = new();
-    public ObservableCollection<string> Messages { get; } = new();
+    public ObservableCollection<MessageItem> Messages { get; } = new();
 
     public MainWindowViewModel()
     {
@@ -81,14 +81,14 @@ public partial class MainWindowViewModel : ViewModelBase
         _connection.HistoryReceived += r => OnUi(() =>
         {
             Messages.Clear();
-            foreach (var m in r.Messages) Messages.Add($"user{m.SenderId}: {m.Text}");
+            foreach (var m in r.Messages)
+                Messages.Add(new MessageItem(m.SenderName, m.Text, FormatTime(m.Timestamp)));
         });
 
         _connection.MessageReceived += m => OnUi(() =>
         {
-            // Показываем только если сообщение из открытой сейчас комнаты
             if (m.RoomId != SelectedRoom?.Id) return;
-            Messages.Add($"{m.SenderName}: {m.Text}");
+            Messages.Add(new MessageItem(m.SenderName, m.Text, FormatTime(m.Timestamp)));
         });
 
         _connection.Disconnected += ex => OnUi(() =>
@@ -99,6 +99,9 @@ public partial class MainWindowViewModel : ViewModelBase
     }
 
     private static void OnUi(Action action) => Dispatcher.UIThread.Post(action);
+    // Сервер отдаёт unix-время в секундах, переводим в локальное время пользователя
+    private static string FormatTime(long unixSeconds) =>
+        DateTimeOffset.FromUnixTimeSeconds(unixSeconds).ToLocalTime().ToString("HH:mm");
 
     private async Task EnsureConnectedAsync()
     {
@@ -173,3 +176,6 @@ public partial class MainWindowViewModel : ViewModelBase
         await _connection.RequestHistoryAsync(roomId);
     }
 }
+
+// Одно сообщение в ленте — с автором и временем
+public sealed record MessageItem(string Author, string Text, string Time);

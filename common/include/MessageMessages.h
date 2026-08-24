@@ -7,12 +7,14 @@
 struct SendMessageRequestPayload {
     int64_t roomId = 0;
     int64_t senderId = 0;
+    std::string senderName;
     std::string text;
 
     std::vector<uint8_t> Serialize() const {
         std::vector<uint8_t> buffer;
         WriteScalar(buffer, roomId);
         WriteScalar(buffer, senderId);
+        WriteString(buffer, senderName);
         WriteString(buffer, text);
         return buffer;
     }
@@ -21,6 +23,7 @@ struct SendMessageRequestPayload {
         SendMessageRequestPayload r;
         r.roomId = ReadScalar<int64_t>(buffer, offset);
         r.senderId = ReadScalar<int64_t>(buffer, offset);
+        r.senderName = ReadString(buffer, offset);
         r.text = ReadString(buffer, offset);
         return r;
     }
@@ -71,12 +74,13 @@ struct ChatMessage {
     int64_t id = 0;
     int64_t roomId = 0;
     int64_t senderId = 0;
+    std::string senderName;
     int64_t timestamp = 0;
     std::string text;
 };
 
 struct HistoryResponsePayload {
-    std::vector<ChatMessage> messages;   // от старых к новым
+    std::vector<ChatMessage> messages;
 
     std::vector<uint8_t> Serialize() const {
         std::vector<uint8_t> buffer;
@@ -85,6 +89,7 @@ struct HistoryResponsePayload {
             WriteScalar(buffer, msg.id);
             WriteScalar(buffer, msg.roomId);
             WriteScalar(buffer, msg.senderId);
+            WriteString(buffer, msg.senderName);
             WriteScalar(buffer, msg.timestamp);
             WriteString(buffer, msg.text);
         }
@@ -99,6 +104,7 @@ struct HistoryResponsePayload {
             msg.id = ReadScalar<int64_t>(buffer, offset);
             msg.roomId = ReadScalar<int64_t>(buffer, offset);
             msg.senderId = ReadScalar<int64_t>(buffer, offset);
+            msg.senderName = ReadString(buffer, offset);
             msg.timestamp = ReadScalar<int64_t>(buffer, offset);
             msg.text = ReadString(buffer, offset);
             r.messages.push_back(msg);

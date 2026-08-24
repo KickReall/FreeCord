@@ -119,7 +119,7 @@ public sealed class HistoryRequest
     }
 }
 
-public sealed record ChatMessage(long Id, long RoomId, long SenderId, long Timestamp, string Text);
+public sealed record ChatMessage(long Id, long RoomId, long SenderId, string SenderName, long Timestamp, string Text);
 
 public sealed class HistoryResponse
 {
@@ -133,7 +133,7 @@ public sealed class HistoryResponse
         for (uint i = 0; i < count; i++)
         {
             messages.Add(new ChatMessage(
-                r.ReadInt64(), r.ReadInt64(), r.ReadInt64(), r.ReadInt64(), r.ReadString()));
+                r.ReadInt64(), r.ReadInt64(), r.ReadInt64(), r.ReadString(), r.ReadInt64(), r.ReadString()));
         }
         return new HistoryResponse { Messages = messages };
     }

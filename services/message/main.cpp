@@ -34,7 +34,8 @@ void HandleSend(SOCKET sock, MessageRepository& repo, const Frame& frame) {
     }
     else {
         int64_t timestamp = CurrentUnixTime();
-        int64_t messageId = repo.SaveMessage(request.roomId, request.senderId, request.text, timestamp);
+        int64_t messageId = repo.SaveMessage(request.roomId, request.senderId, request.senderName,
+            request.text, timestamp);
         if (messageId == -1) {
             response.status = 3; // storage error
             std::cout << "[message] Storage error" << std::endl;
