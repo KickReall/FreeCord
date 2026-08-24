@@ -65,3 +65,15 @@ size_t SessionManager::OnlineCount() {
     std::lock_guard<std::mutex> lock(m_mutex);
     return m_sessions.size();
 }
+
+std::vector<SessionPtr> SessionManager::GetSessionsInRoom(int64_t roomId) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    std::vector<SessionPtr> result;
+    for (const auto& [id, session] : m_sessions) {
+        if (session->currentRoomId.load() == roomId) {
+            result.push_back(session);
+        }
+    }
+    return result;
+}

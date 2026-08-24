@@ -88,18 +88,6 @@ public partial class MainWindowViewModel : ViewModelBase
             Messages.Add($"{m.SenderName}: {m.Text}");
         });
 
-        _connection.UserJoined += p => OnUi(() =>
-        {
-            if (p.RoomId != SelectedRoom?.Id) return;
-            Messages.Add($"— {p.Username} joined —");
-        });
-
-        _connection.UserLeft += p => OnUi(() =>
-        {
-            if (p.RoomId != SelectedRoom?.Id) return;
-            Messages.Add($"— {p.Username} left —");
-        });
-
         _connection.Disconnected += ex => OnUi(() =>
         {
             IsLoggedIn = false;
@@ -162,11 +150,23 @@ public partial class MainWindowViewModel : ViewModelBase
         MessageText = "";
     }
 
-    // Срабатывает автоматически при смене SelectedRoom — генерируется из [ObservableProperty]
+    // Срабатывает при клике по комнате в списке
     partial void OnSelectedRoomChanged(RoomInfo? value)
     {
-        if (value is null) return;
         Messages.Clear();
-        _ = _connection.RequestHistoryAsync(value.Id);
+
+        if (value is null)
+        {
+            _ = _connection.LeaveRoomAsync(0);
+            return;
+        }
+
+        _ = SwitchToRoomAsync(value.Id);
+    }
+
+    private async Task SwitchToRoomAsync(long roomId)
+    {
+        await _connection.JoinRoomAsync(roomId);
+        await _connection.RequestHistoryAsync(roomId);
     }
 }

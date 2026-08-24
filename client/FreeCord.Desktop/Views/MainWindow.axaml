@@ -47,7 +47,7 @@
 
             <!-- Список комнат -->
             <Border Grid.Column="0" Background="#1E1F22" Padding="8">
-                <Grid RowDefinitions="Auto,*,Auto,Auto">
+                <Grid RowDefinitions="Auto,*,Auto">
                     <TextBlock Grid.Row="0" Text="ROOMS" Foreground="#B5BAC1"
                                FontSize="11" FontWeight="Bold" Margin="4,4,4,8"/>
 
@@ -61,12 +61,7 @@
                         </ListBox.ItemTemplate>
                     </ListBox>
 
-                    <Button Grid.Row="2" Content="Join selected"
-                            Command="{Binding JoinSelectedRoomCommand}"
-                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
-                            Margin="0,8,0,4"/>
-
-                    <Grid Grid.Row="3" ColumnDefinitions="*,Auto">
+                    <Grid Grid.Row="2" ColumnDefinitions="*,Auto" Margin="0,8,0,0">
                         <TextBox Grid.Column="0" Text="{Binding NewRoomName}" Watermark="new room"/>
                         <Button Grid.Column="1" Content="+" Margin="4,0,0,0"
                                 Command="{Binding CreateRoomCommand}"/>

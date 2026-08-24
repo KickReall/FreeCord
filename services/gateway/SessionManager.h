@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <vector>
 #include <winsock2.h>
+#include <atomic>
 
 struct Session {
     uint64_t sessionId = 0;
@@ -14,6 +15,10 @@ struct Session {
     std::string username;
     SOCKET socket = INVALID_SOCKET;
     std::mutex sendMutex;
+
+    // Комната, открытая пользователем сейчас. 0 = ни одной.
+    // atomic — читается из чужих потоков при рассылке.
+    std::atomic<int64_t> currentRoomId{ 0 };
 };
 
 using SessionPtr = std::shared_ptr<Session>;
@@ -25,6 +30,8 @@ public:
     std::vector<SessionPtr> GetSessionsForUsers(const std::vector<int64_t>& userIds);
     // Все активные сессии — для рассылки глобальных событий
     std::vector<SessionPtr> GetAllSessions();
+    // Все, кто сейчас открыл эту комнату
+    std::vector<SessionPtr> GetSessionsInRoom(int64_t roomId);
     size_t OnlineCount();
 
 private:

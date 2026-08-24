@@ -42,20 +42,10 @@ int BroadcastToAll(MessageType type, const std::vector<uint8_t>& payload, int64_
     return delivered;
 }
 
-// Разослать всем онлайн-участникам комнаты. excludeUserId=0 — отправить всем без исключений.
+// Разослать всем, кто сейчас открыл эту комнату.
 int BroadcastToRoom(int64_t roomId, MessageType type, const std::vector<uint8_t>& payload, int64_t excludeUserId = 0) {
-    RoomMembersRequestPayload membersRequest;
-    membersRequest.roomId = roomId;
-
-    Frame membersResponse;
-    if (!CallService(SERVICE_HOST, ROOM_SERVICE_PORT, MessageType::RoomMembersRequest,
-        membersRequest.Serialize(), MessageType::RoomMembersResponse, membersResponse)) {
-        return 0;
-    }
-    auto members = RoomMembersResponsePayload::Deserialize(membersResponse.payload);
-
     int delivered = 0;
-    for (const auto& session : g_sessions.GetSessionsForUsers(members.userIds)) {
+    for (const auto& session : g_sessions.GetSessionsInRoom(roomId)) {
         if (session->userId == excludeUserId) continue;
         if (SendToSession(session, type, payload)) delivered++;
     }
@@ -93,45 +83,26 @@ void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
         frame.sequence, response.Serialize());
 }
 
-// Проксирование команд комнат: gateway подставляет userId из сессии,
-// чтобы клиент не мог вступить в комнату от чужого имени.
-void HandleRoomMembership(ClientContext& ctx, const Frame& frame, bool isJoin) {
-    auto clientRequest = RoomMembershipRequestPayload::Deserialize(frame.payload);
+// Выбор комнаты: просто переключение в сессии, без записей в БД.
+void HandleSelectRoom(ClientContext& ctx, const Frame& frame) {
+    auto request = RoomMembershipRequestPayload::Deserialize(frame.payload);
 
-    RoomMembershipRequestPayload serviceRequest;
-    serviceRequest.roomId = clientRequest.roomId;
-    serviceRequest.userId = ctx.session->userId;   // из сессии, не из запроса
-
-    Frame roomResponse;
-    bool ok = CallService(SERVICE_HOST, ROOM_SERVICE_PORT,
-        isJoin ? MessageType::RoomJoinRequest : MessageType::RoomLeaveRequest,
-        serviceRequest.Serialize(),
-        isJoin ? MessageType::RoomJoinResponse : MessageType::RoomLeaveResponse,
-        roomResponse);
+    int64_t previous = ctx.session->currentRoomId.exchange(request.roomId);
 
     StatusResponsePayload response;
-    response.status = ok ? StatusResponsePayload::Deserialize(roomResponse.payload).status : 9;
+    response.status = 0;
+    SendToSession(ctx.session, MessageType::JoinRoomResponse, response.Serialize());
 
-    SendToSession(ctx.session,
-        isJoin ? MessageType::JoinRoomResponse : MessageType::RoomLeaveResponse,
-        response.Serialize());
+    std::cout << "[gateway] userId=" << ctx.session->userId
+        << " switched room " << previous << " -> " << request.roomId << std::endl;
+}
 
-    if (response.status == 0) {
-        UserPresencePayload presence;
-        presence.roomId = serviceRequest.roomId;
-        presence.userId = ctx.session->userId;
-        presence.username = ctx.session->username;
+void HandleLeaveRoom(ClientContext& ctx, const Frame& frame) {
+    ctx.session->currentRoomId.store(0);
 
-        // При join уведомляем остальных; при leave — тоже остальных,
-        // но сам ушедший уже не в списке участников, так что exclude не нужен.
-        BroadcastToRoom(serviceRequest.roomId,
-            isJoin ? MessageType::UserJoined : MessageType::UserLeft,
-            presence.Serialize(),
-            isJoin ? ctx.session->userId : 0);
-
-        std::cout << "[gateway] userId=" << ctx.session->userId
-            << (isJoin ? " joined" : " left") << " roomId=" << serviceRequest.roomId << std::endl;
-    }
+    StatusResponsePayload response;
+    response.status = 0;
+    SendToSession(ctx.session, MessageType::RoomLeaveResponse, response.Serialize());
 }
 
 void HandleRoomList(ClientContext& ctx, const Frame& frame) {
@@ -180,6 +151,14 @@ void HandleHistory(ClientContext& ctx, const Frame& frame) {
 
 void HandleTextMessage(ClientContext& ctx, const Frame& frame) {
     auto clientMessage = ClientTextMessagePayload::Deserialize(frame.payload);
+
+    // Писать можно только в комнату, открытую сейчас
+    if (ctx.session->currentRoomId.load() != clientMessage.roomId) {
+        std::cout << "[gateway] userId=" << ctx.session->userId
+            << " tried to post to room " << clientMessage.roomId
+            << " while in " << ctx.session->currentRoomId.load() << std::endl;
+        return;
+    }
 
     // 1. Сохранить в message_service
     SendMessageRequestPayload saveRequest;
@@ -247,8 +226,8 @@ void ClientThread(SOCKET clientSocket) {
         case MessageType::AuthRequest:       HandleAuth(ctx, frame, false);          break;
         case MessageType::RoomCreateRequest: HandleRoomCreate(ctx, frame);           break;
         case MessageType::RoomListRequest:   HandleRoomList(ctx, frame);             break;
-        case MessageType::JoinRoom:          HandleRoomMembership(ctx, frame, true); break;
-        case MessageType::LeaveRoom:         HandleRoomMembership(ctx, frame, false);break;
+        case MessageType::JoinRoom:          HandleSelectRoom(ctx, frame);           break;
+        case MessageType::LeaveRoom:         HandleLeaveRoom(ctx, frame);            break;
         case MessageType::HistoryRequest:    HandleHistory(ctx, frame);              break;
         case MessageType::TextMessage:       HandleTextMessage(ctx, frame);          break;
         case MessageType::Ping:
