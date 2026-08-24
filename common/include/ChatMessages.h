@@ -56,3 +56,26 @@ struct BroadcastTextMessagePayload {
         return r;
     }
 };
+
+// Gateway -> клиенты комнаты: кто-то вошёл или вышел
+struct UserPresencePayload {
+    int64_t roomId = 0;
+    int64_t userId = 0;
+    std::string username;
+
+    std::vector<uint8_t> Serialize() const {
+        std::vector<uint8_t> buffer;
+        WriteScalar(buffer, roomId);
+        WriteScalar(buffer, userId);
+        WriteString(buffer, username);
+        return buffer;
+    }
+    static UserPresencePayload Deserialize(const std::vector<uint8_t>& buffer) {
+        size_t offset = 0;
+        UserPresencePayload r;
+        r.roomId = ReadScalar<int64_t>(buffer, offset);
+        r.userId = ReadScalar<int64_t>(buffer, offset);
+        r.username = ReadString(buffer, offset);
+        return r;
+    }
+};

@@ -90,6 +90,15 @@ void HandleFrame(const Frame& frame) {
     case MessageType::Pong:
         std::cout << "\n  [+] Pong" << std::endl;
         break;
+    case MessageType::UserJoined:
+    case MessageType::UserLeft: {
+        auto p = UserPresencePayload::Deserialize(frame.payload);
+        std::cout << "\n  <room " << p.roomId << "> " << p.username
+            << (frame.messageType == static_cast<uint16_t>(MessageType::UserJoined)
+                ? " joined" : " left") << std::endl;
+        std::cout << "> " << std::flush;
+        break;
+    }
     default:
         std::cout << "\n  [?] Unhandled messageType 0x" << std::hex
             << frame.messageType << std::dec << std::endl;

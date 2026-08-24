@@ -3,6 +3,7 @@
 #include <vector>
 #include <SQLiteCpp/SQLiteCpp.h>
 #include "MessageMessages.h"
+#include <mutex>
 
 class MessageRepository {
 public:
@@ -16,4 +17,5 @@ public:
 
 private:
     SQLite::Database m_db;
+    std::mutex m_mutex;
 };

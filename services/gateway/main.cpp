@@ -32,6 +32,26 @@ bool SendToSession(const SessionPtr& session, MessageType type, const std::vecto
     return SendFrame(session->socket, static_cast<uint16_t>(type), 0, payload) == FrameResult::Ok;
 }
 
+// Разослать всем онлайн-участникам комнаты. excludeUserId=0 — отправить всем без исключений.
+int BroadcastToRoom(int64_t roomId, MessageType type, const std::vector<uint8_t>& payload, int64_t excludeUserId = 0) {
+    RoomMembersRequestPayload membersRequest;
+    membersRequest.roomId = roomId;
+
+    Frame membersResponse;
+    if (!CallService(SERVICE_HOST, ROOM_SERVICE_PORT, MessageType::RoomMembersRequest,
+        membersRequest.Serialize(), MessageType::RoomMembersResponse, membersResponse)) {
+        return 0;
+    }
+    auto members = RoomMembersResponsePayload::Deserialize(membersResponse.payload);
+
+    int delivered = 0;
+    for (const auto& session : g_sessions.GetSessionsForUsers(members.userIds)) {
+        if (session->userId == excludeUserId) continue;
+        if (SendToSession(session, type, payload)) delivered++;
+    }
+    return delivered;
+}
+
 void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
     auto request = AuthRequestPayload::Deserialize(frame.payload);
 
@@ -87,6 +107,18 @@ void HandleRoomMembership(ClientContext& ctx, const Frame& frame, bool isJoin) {
         response.Serialize());
 
     if (response.status == 0) {
+        UserPresencePayload presence;
+        presence.roomId = serviceRequest.roomId;
+        presence.userId = ctx.session->userId;
+        presence.username = ctx.session->username;
+
+        // При join уведомляем остальных; при leave — тоже остальных,
+        // но сам ушедший уже не в списке участников, так что exclude не нужен.
+        BroadcastToRoom(serviceRequest.roomId,
+            isJoin ? MessageType::UserJoined : MessageType::UserLeft,
+            presence.Serialize(),
+            isJoin ? ctx.session->userId : 0);
+
         std::cout << "[gateway] userId=" << ctx.session->userId
             << (isJoin ? " joined" : " left") << " roomId=" << serviceRequest.roomId << std::endl;
     }
@@ -119,7 +151,6 @@ void HandleHistory(ClientContext& ctx, const Frame& frame) {
     SendToSession(ctx.session, MessageType::HistoryResponse, historyResponse.payload);
 }
 
-// Здесь и происходит fanout.
 void HandleTextMessage(ClientContext& ctx, const Frame& frame) {
     auto clientMessage = ClientTextMessagePayload::Deserialize(frame.payload);
 
@@ -142,19 +173,7 @@ void HandleTextMessage(ClientContext& ctx, const Frame& frame) {
         return;
     }
 
-    // 2. Узнать участников комнаты
-    RoomMembersRequestPayload membersRequest;
-    membersRequest.roomId = clientMessage.roomId;
-
-    Frame membersResponse;
-    if (!CallService(SERVICE_HOST, ROOM_SERVICE_PORT, MessageType::RoomMembersRequest,
-        membersRequest.Serialize(), MessageType::RoomMembersResponse, membersResponse)) {
-        std::cout << "[gateway] room_service unavailable" << std::endl;
-        return;
-    }
-    auto members = RoomMembersResponsePayload::Deserialize(membersResponse.payload);
-
-    // 3. Разослать тем, кто онлайн (включая отправителя)
+    // 2. Собрать payload для рассылки
     BroadcastTextMessagePayload broadcast;
     broadcast.messageId = saved.messageId;
     broadcast.roomId = clientMessage.roomId;
@@ -163,17 +182,11 @@ void HandleTextMessage(ClientContext& ctx, const Frame& frame) {
     broadcast.timestamp = saved.timestamp;
     broadcast.text = clientMessage.text;
 
-    auto payload = broadcast.Serialize();
-    auto sessions = g_sessions.GetSessionsForUsers(members.userIds);
-
-    int delivered = 0;
-    for (const auto& session : sessions) {
-        if (SendToSession(session, MessageType::TextMessage, payload)) delivered++;
-    }
+    // 3. Разослать участникам комнаты (включая отправителя)
+    int delivered = BroadcastToRoom(clientMessage.roomId, MessageType::TextMessage, broadcast.Serialize());
 
     std::cout << "[gateway] Message " << saved.messageId << " from '" << ctx.session->username
-        << "' delivered to " << delivered << "/" << members.userIds.size()
-        << " (online/total)" << std::endl;
+        << "' delivered to " << delivered << " online users" << std::endl;
 }
 
 void ClientThread(SOCKET clientSocket) {

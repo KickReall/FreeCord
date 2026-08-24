@@ -1,12 +1,14 @@
 #include <iostream>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <thread>
 
 #include "WinsockGuard.h"
 #include "TcpFramer.h"
 #include "ProtocolTypes.h"
 #include "RoomMessages.h"
 #include "RoomRepository.h"
+
 
 constexpr int ROOM_SERVICE_PORT = 6002;
 constexpr const char* DB_PATH = "freecord_rooms.db";
@@ -127,7 +129,7 @@ int main() {
     while (true) {
         SOCKET clientSocket = accept(listenSocket, nullptr, nullptr);
         if (clientSocket == INVALID_SOCKET) continue;
-        HandleClient(clientSocket, repo);
+        std::thread(HandleClient, clientSocket, std::ref(repo)).detach();
     }
 
     closesocket(listenSocket);

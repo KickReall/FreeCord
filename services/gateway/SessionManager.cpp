@@ -9,7 +9,12 @@ SessionPtr SessionManager::AddSession(int64_t userId, const std::string& usernam
     }
 
     auto session = std::make_shared<Session>();
-    session->sessionId = m_nextSessionId++;
+    // Случайный id, чтобы чужую сессию нельзя было угадать перебором.
+    uint64_t sessionId;
+    do {
+        sessionId = m_rng();
+    } while (sessionId == 0 || m_sessions.count(sessionId) > 0);
+    session->sessionId = sessionId;
     session->userId = userId;
     session->username = username;
     session->socket = socket;

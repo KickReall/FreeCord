@@ -3,6 +3,7 @@
 #include <vector>
 #include <optional>
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <mutex>
 
 struct RoomRecord {
     int64_t id;
@@ -28,4 +29,5 @@ public:
 
 private:
     SQLite::Database m_db;
+    std::mutex m_mutex;
 };

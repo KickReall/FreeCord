@@ -2,6 +2,7 @@
 #include <chrono>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <thread>
 
 #include "WinsockGuard.h"
 #include "TcpFramer.h"
@@ -104,7 +105,7 @@ int main() {
     while (true) {
         SOCKET clientSocket = accept(listenSocket, nullptr, nullptr);
         if (clientSocket == INVALID_SOCKET) continue;
-        HandleClient(clientSocket, repo);
+        std::thread(HandleClient, clientSocket, std::ref(repo)).detach();
     }
 
     closesocket(listenSocket);

@@ -4,6 +4,7 @@
 MessageRepository::MessageRepository(const std::string& dbPath)
     : m_db(dbPath, SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE)
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_db.exec("PRAGMA journal_mode = WAL");
     m_db.exec("PRAGMA busy_timeout = 5000");
 
@@ -22,6 +23,7 @@ MessageRepository::MessageRepository(const std::string& dbPath)
 }
 
 int64_t MessageRepository::SaveMessage(int64_t roomId, int64_t senderId, const std::string& text, int64_t timestamp) {
+    std::lock_guard<std::mutex> lock(m_mutex);
     try {
         SQLite::Statement query(m_db, "INSERT INTO messages (room_id, sender_id, text, timestamp) VALUES (?, ?, ?, ?)");
         query.bind(1, roomId);
@@ -37,6 +39,7 @@ int64_t MessageRepository::SaveMessage(int64_t roomId, int64_t senderId, const s
 }
 
 std::vector<ChatMessage> MessageRepository::GetHistory(int64_t roomId, uint32_t limit) {
+    std::lock_guard<std::mutex> lock(m_mutex);
     std::vector<ChatMessage> result;
 
     // Берём ПОСЛЕДНИЕ limit сообщений — сортируем по убыванию, потом переворачиваем.

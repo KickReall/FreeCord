@@ -3,6 +3,7 @@
 RoomRepository::RoomRepository(const std::string& dbPath)
     : m_db(dbPath, SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE)
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
     // WAL позволяет читать во время записи — пригодится, когда сервисы начнут работать параллельно
     m_db.exec("PRAGMA journal_mode = WAL");
     m_db.exec("PRAGMA busy_timeout = 5000");
@@ -27,6 +28,7 @@ RoomRepository::RoomRepository(const std::string& dbPath)
 }
 
 int64_t RoomRepository::CreateRoom(const std::string& name) {
+    std::lock_guard<std::mutex> lock(m_mutex);
     try {
         SQLite::Statement query(m_db, "INSERT INTO rooms (name) VALUES (?)");
         query.bind(1, name);
@@ -39,12 +41,14 @@ int64_t RoomRepository::CreateRoom(const std::string& name) {
 }
 
 bool RoomRepository::RoomExists(int64_t roomId) {
+    std::lock_guard<std::mutex> lock(m_mutex);
     SQLite::Statement query(m_db, "SELECT 1 FROM rooms WHERE id = ?");
     query.bind(1, roomId);
     return query.executeStep();
 }
 
 bool RoomRepository::AddMember(int64_t roomId, int64_t userId) {
+    std::lock_guard<std::mutex> lock(m_mutex);
     try {
         SQLite::Statement query(m_db, "INSERT INTO room_members (room_id, user_id) VALUES (?, ?)");
         query.bind(1, roomId);
@@ -58,6 +62,7 @@ bool RoomRepository::AddMember(int64_t roomId, int64_t userId) {
 }
 
 bool RoomRepository::RemoveMember(int64_t roomId, int64_t userId) {
+    std::lock_guard<std::mutex> lock(m_mutex);
     SQLite::Statement query(m_db, "DELETE FROM room_members WHERE room_id = ? AND user_id = ?");
     query.bind(1, roomId);
     query.bind(2, userId);
@@ -65,6 +70,7 @@ bool RoomRepository::RemoveMember(int64_t roomId, int64_t userId) {
 }
 
 std::vector<RoomRecord> RoomRepository::ListRooms() {
+    std::lock_guard<std::mutex> lock(m_mutex);
     std::vector<RoomRecord> result;
     SQLite::Statement query(m_db, "SELECT id, name FROM rooms ORDER BY id");
     while (query.executeStep()) {
@@ -77,6 +83,7 @@ std::vector<RoomRecord> RoomRepository::ListRooms() {
 }
 
 std::vector<int64_t> RoomRepository::ListMembers(int64_t roomId) {
+    std::lock_guard<std::mutex> lock(m_mutex);
     std::vector<int64_t> result;
     SQLite::Statement query(m_db, "SELECT user_id FROM room_members WHERE room_id = ? ORDER BY user_id");
     query.bind(1, roomId);
