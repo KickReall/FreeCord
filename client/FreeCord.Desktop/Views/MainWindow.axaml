@@ -1,0 +1,112 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:FreeCord.Desktop.ViewModels"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="600"
+        x:Class="FreeCord.Desktop.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Title="FreeCord" Width="900" Height="600"
+        Background="#2B2D31">
+
+    <Design.DataContext>
+        <vm:MainWindowViewModel/>
+    </Design.DataContext>
+
+    <Grid RowDefinitions="*,Auto">
+
+        <!-- Панель логина -->
+        <Border Grid.Row="0" IsVisible="{Binding !IsLoggedIn}"
+                Padding="40" HorizontalAlignment="Center" VerticalAlignment="Center">
+            <StackPanel Spacing="12" Width="300">
+                <TextBlock Text="FreeCord" FontSize="28" FontWeight="Bold"
+                           Foreground="White" HorizontalAlignment="Center"/>
+
+                <TextBlock Text="Server" Foreground="#B5BAC1"/>
+                <Grid ColumnDefinitions="*,Auto" >
+                    <TextBox Grid.Column="0" Text="{Binding Host}" Watermark="host"/>
+                    <TextBox Grid.Column="1" Text="{Binding Port}" Width="70" Margin="6,0,0,0"/>
+                </Grid>
+
+                <TextBlock Text="Username" Foreground="#B5BAC1"/>
+                <TextBox Text="{Binding Username}"/>
+
+                <TextBlock Text="Password" Foreground="#B5BAC1"/>
+                <TextBox Text="{Binding Password}" PasswordChar="•"/>
+
+                <Button Content="Log in" Command="{Binding LoginCommand}"
+                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
+                <Button Content="Register" Command="{Binding RegisterCommand}"
+                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Панель чата -->
+        <Grid Grid.Row="0" IsVisible="{Binding IsLoggedIn}"
+              ColumnDefinitions="220,*">
+
+            <!-- Список комнат -->
+            <Border Grid.Column="0" Background="#1E1F22" Padding="8">
+                <Grid RowDefinitions="Auto,*,Auto,Auto">
+                    <TextBlock Grid.Row="0" Text="ROOMS" Foreground="#B5BAC1"
+                               FontSize="11" FontWeight="Bold" Margin="4,4,4,8"/>
+
+                    <ListBox Grid.Row="1" ItemsSource="{Binding Rooms}"
+                             SelectedItem="{Binding SelectedRoom}"
+                             Background="Transparent">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Name}" Foreground="#DBDEE1"/>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+
+                    <Button Grid.Row="2" Content="Join selected"
+                            Command="{Binding JoinSelectedRoomCommand}"
+                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                            Margin="0,8,0,4"/>
+
+                    <Grid Grid.Row="3" ColumnDefinitions="*,Auto">
+                        <TextBox Grid.Column="0" Text="{Binding NewRoomName}" Watermark="new room"/>
+                        <Button Grid.Column="1" Content="+" Margin="4,0,0,0"
+                                Command="{Binding CreateRoomCommand}"/>
+                    </Grid>
+                </Grid>
+            </Border>
+
+            <!-- Лента сообщений -->
+            <Grid Grid.Column="1" RowDefinitions="Auto,*,Auto" Margin="12">
+                <TextBlock Grid.Row="0" Foreground="White" FontSize="16" FontWeight="Bold"
+                           Text="{Binding SelectedRoom.Name, FallbackValue='Select a room'}"
+                           Margin="0,0,0,8"/>
+
+                <ScrollViewer Grid.Row="1">
+                    <ItemsControl ItemsSource="{Binding Messages}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding}" Foreground="#DBDEE1"
+                                           TextWrapping="Wrap" Margin="0,2"/>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+
+                <Grid Grid.Row="2" ColumnDefinitions="*,Auto" Margin="0,8,0,0">
+                    <TextBox Grid.Column="0" Text="{Binding MessageText}"
+                             Watermark="Type a message...">
+                        <TextBox.KeyBindings>
+                            <KeyBinding Gesture="Enter" Command="{Binding SendMessageCommand}"/>
+                        </TextBox.KeyBindings>
+                    </TextBox>
+                    <Button Grid.Column="1" Content="Send" Margin="6,0,0,0"
+                            Command="{Binding SendMessageCommand}"/>
+                </Grid>
+            </Grid>
+        </Grid>
+
+        <!-- Статусная строка -->
+        <Border Grid.Row="1" Background="#1E1F22" Padding="8,4">
+            <TextBlock Text="{Binding Status}" Foreground="#B5BAC1" FontSize="12"/>
+        </Border>
+    </Grid>
+</Window>
