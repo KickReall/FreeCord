@@ -6,8 +6,9 @@
 
 enum class FrameResult {
     Ok,
-    ConnectionClosed,  // удалённая сторона закрыла соединение штатно
-    Error               // ошибка сокета
+    Timeout,            // за отведённое время ничего не пришло — не ошибка, просто тишина
+    ConnectionClosed,
+    Error
 };
 
 struct Frame {

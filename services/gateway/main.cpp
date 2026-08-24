@@ -2,6 +2,7 @@
 #include <thread>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <chrono>
 
 #include "WinsockGuard.h"
 #include "TcpFramer.h"
@@ -19,6 +20,8 @@ constexpr int AUTH_SERVICE_PORT = 6001;
 constexpr int ROOM_SERVICE_PORT = 6002;
 constexpr int MESSAGE_SERVICE_PORT = 6003;
 constexpr int64_t SYSTEM_ROOM_ID = 1;
+constexpr int RECV_TIMEOUT_MS = 5000;        // как часто просыпаемся проверить тишину
+constexpr int CLIENT_IDLE_TIMEOUT_SEC = 45;  // после этого считаем клиента мёртвым
 
 SessionManager g_sessions;
 
@@ -238,14 +241,36 @@ void ClientThread(SOCKET clientSocket) {
     ctx.socket = clientSocket;
     std::cout << "[gateway] Client connected" << std::endl;
 
+    // Ставим таймаут на чтение, чтобы recv() не висел вечно на мёртвом соединении
+    DWORD timeout = RECV_TIMEOUT_MS;
+    setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO,
+        reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+
+    auto lastActivity = std::chrono::steady_clock::now();
+
     while (true) {
         Frame frame;
         FrameResult result = ReceiveFrame(ctx.socket, frame);
+
+        if (result == FrameResult::Timeout) {
+            auto idleSeconds = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - lastActivity).count();
+
+            if (idleSeconds >= CLIENT_IDLE_TIMEOUT_SEC) {
+                std::cout << "[gateway] Client timed out (userId="
+                    << (ctx.session ? ctx.session->userId : 0)
+                    << ", idle " << idleSeconds << "s)" << std::endl;
+                break;
+            }
+            continue;   // просто тишина, ждём дальше
+        }
 
         if (result != FrameResult::Ok) {
             std::cout << "[gateway] Client disconnected" << std::endl;
             break;
         }
+
+        lastActivity = std::chrono::steady_clock::now();
 
         MessageType type = static_cast<MessageType>(frame.messageType);
         bool isAuthenticated = (ctx.session != nullptr);
@@ -260,16 +285,17 @@ void ClientThread(SOCKET clientSocket) {
         }
 
         switch (type) {
-        case MessageType::RegisterRequest:   HandleAuth(ctx, frame, true);           break;
-        case MessageType::AuthRequest:       HandleAuth(ctx, frame, false);          break;
-        case MessageType::RoomCreateRequest: HandleRoomCreate(ctx, frame);           break;
-        case MessageType::RoomListRequest:   HandleRoomList(ctx, frame);             break;
-        case MessageType::JoinRoom:          HandleSelectRoom(ctx, frame);           break;
-        case MessageType::LeaveRoom:         HandleLeaveRoom(ctx, frame);            break;
-        case MessageType::HistoryRequest:    HandleHistory(ctx, frame);              break;
-        case MessageType::TextMessage:       HandleTextMessage(ctx, frame);          break;
+        case MessageType::RegisterRequest:   HandleAuth(ctx, frame, true);  break;
+        case MessageType::AuthRequest:       HandleAuth(ctx, frame, false); break;
+        case MessageType::RoomCreateRequest: HandleRoomCreate(ctx, frame);  break;
+        case MessageType::RoomListRequest:   HandleRoomList(ctx, frame);    break;
+        case MessageType::JoinRoom:          HandleSelectRoom(ctx, frame);  break;
+        case MessageType::LeaveRoom:         HandleLeaveRoom(ctx, frame);   break;
+        case MessageType::HistoryRequest:    HandleHistory(ctx, frame);     break;
+        case MessageType::TextMessage:       HandleTextMessage(ctx, frame); break;
         case MessageType::Ping:
-            SendToSession(ctx.session, MessageType::Pong, frame.payload);
+            // Отвечаем только залогиненным — до логина сессии ещё нет
+            if (ctx.session) SendToSession(ctx.session, MessageType::Pong, frame.payload);
             break;
         default:
             std::cout << "[gateway] Unhandled 0x" << std::hex << frame.messageType

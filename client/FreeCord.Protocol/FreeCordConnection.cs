@@ -18,6 +18,8 @@ public sealed class FreeCordConnection : IAsyncDisposable
     private NetworkStream? _stream;
     private CancellationTokenSource? _cts;
     private Task? _receiveTask;
+    private Task? _pingTask;
+    private static readonly TimeSpan PingInterval = TimeSpan.FromSeconds(15);
 
     // Отправлять могут разные потоки — сериализуем запись, иначе кадры перемешаются
     private readonly SemaphoreSlim _sendLock = new(1, 1);
@@ -47,6 +49,7 @@ public sealed class FreeCordConnection : IAsyncDisposable
 
         _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         _receiveTask = Task.Run(() => ReceiveLoopAsync(_cts.Token));
+        _pingTask = Task.Run(() => PingLoopAsync(_cts.Token));
     }
 
     public async Task SendAsync(MessageType type, byte[] payload, uint sequence = 0)
@@ -72,6 +75,21 @@ public sealed class FreeCordConnection : IAsyncDisposable
     }
 
     public Task SendAsync(MessageType type) => SendAsync(type, Array.Empty<byte>());
+
+    // Периодический ping — сообщает серверу, что клиент жив
+    private async Task PingLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(PingInterval, ct);
+                await SendAsync(MessageType.Ping);
+            }
+        }
+        catch (OperationCanceledException) { /* штатное закрытие */ }
+        catch { /* соединение уже разорвано, ReceiveLoop сообщит об этом */ }
+    }
 
     private async Task ReceiveLoopAsync(CancellationToken ct)
     {
@@ -185,6 +203,10 @@ public sealed class FreeCordConnection : IAsyncDisposable
         if (_receiveTask is not null)
         {
             try { await _receiveTask; } catch { /* уже закрыто */ }
+        }
+        if (_pingTask is not null)
+        {
+            try { await _pingTask; } catch { }
         }
         _cts?.Dispose();
         _tcp?.Dispose();

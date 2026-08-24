@@ -16,8 +16,9 @@ namespace {
         return true;
     }
 
-    // Гарантированно читает ровно `size` байт — recv() может вернуть меньше за один вызов.
-    // Возвращает false при ошибке или закрытии соединения (recv() == 0).
+    // Гарантированно читает ровно `size` байт.
+    // Timeout возвращается ТОЛЬКО если не успели прочитать ни одного байта —
+    // иначе кадр пришёл частично, и бросать его на полпути нельзя.
     FrameResult RecvAll(SOCKET socket, uint8_t* data, size_t size) {
         size_t totalReceived = 0;
         while (totalReceived < size) {
@@ -27,6 +28,13 @@ namespace {
                 return FrameResult::ConnectionClosed;
             }
             if (received == SOCKET_ERROR) {
+                int error = WSAGetLastError();
+                if (error == WSAETIMEDOUT) {
+                    // Тишина в начале кадра — нормальная ситуация, сообщаем наверх.
+                    // Тишина в середине кадра — продолжаем ждать остаток.
+                    if (totalReceived == 0) return FrameResult::Timeout;
+                    continue;
+                }
                 return FrameResult::Error;
             }
             totalReceived += static_cast<size_t>(received);
