@@ -8,10 +8,12 @@
 #include "ProtocolTypes.h"
 #include "AuthMessages.h"
 #include "RoomMessages.h"
+#include "MessageMessages.h"
 
 constexpr const char* SERVICE_HOST = "127.0.0.1";
 constexpr int AUTH_SERVICE_PORT = 6001;
 constexpr int ROOM_SERVICE_PORT = 6002;
+constexpr int MESSAGE_SERVICE_PORT = 6003;
 
 // Текущий залогиненный пользователь. 0 = не залогинен.
 int64_t g_currentUserId = 0;
@@ -170,6 +172,60 @@ void DoListMembers() {
     }
 }
 
+void DoSendMessage() {
+    if (g_currentUserId == 0) {
+        std::cout << "  [!] You must log in first (option 2)" << std::endl;
+        return;
+    }
+
+    int64_t roomId = 0;
+    std::cout << "  Room id: "; std::cin >> roomId;
+    std::cin.ignore(); // сбрасываем перевод строки, иначе getline прочитает пустую строку
+
+    std::string text;
+    std::cout << "  Text: ";
+    std::getline(std::cin, text);
+
+    SendMessageRequestPayload request;
+    request.roomId = roomId;
+    request.senderId = g_currentUserId;
+    request.text = text;
+
+    Frame response;
+    if (!Exchange(MESSAGE_SERVICE_PORT, MessageType::SendMessageRequest, request.Serialize(),
+        MessageType::SendMessageResponse, response)) return;
+
+    auto payload = SendMessageResponsePayload::Deserialize(response.payload);
+    switch (payload.status) {
+    case 0: std::cout << "  Sent, messageId = " << payload.messageId << std::endl; break;
+    case 1: std::cout << "  Failed: empty text" << std::endl; break;
+    case 2: std::cout << "  Failed: text too long" << std::endl; break;
+    default: std::cout << "  Failed: status " << static_cast<int>(payload.status) << std::endl; break;
+    }
+}
+
+void DoHistory() {
+    int64_t roomId = 0;
+    std::cout << "  Room id: "; std::cin >> roomId;
+
+    HistoryRequestPayload request;
+    request.roomId = roomId;
+    request.limit = 50;
+
+    Frame response;
+    if (!Exchange(MESSAGE_SERVICE_PORT, MessageType::HistoryRequest, request.Serialize(),
+        MessageType::HistoryResponse, response)) return;
+
+    auto payload = HistoryResponsePayload::Deserialize(response.payload);
+    if (payload.messages.empty()) {
+        std::cout << "  (no messages)" << std::endl;
+        return;
+    }
+    for (const auto& msg : payload.messages) {
+        std::cout << "  [" << msg.id << "] user" << msg.senderId << ": " << msg.text << std::endl;
+    }
+}
+
 int main() {
     WinsockGuard winsock;
     if (!winsock.IsInitialized()) {
@@ -190,6 +246,9 @@ int main() {
         std::cout << "5 - Join room" << std::endl;
         std::cout << "6 - Leave room" << std::endl;
         std::cout << "7 - List members" << std::endl;
+        std::cout << "--- messages ---" << std::endl;
+        std::cout << "8 - Send message" << std::endl;
+        std::cout << "9 - Show history" << std::endl;
         std::cout << "0 - Exit" << std::endl;
         std::cout << "> ";
 
@@ -205,6 +264,8 @@ int main() {
         case 5: DoMembership(MessageType::RoomJoinRequest, MessageType::RoomJoinResponse, "Joined"); break;
         case 6: DoMembership(MessageType::RoomLeaveRequest, MessageType::RoomLeaveResponse, "Left"); break;
         case 7: DoListMembers(); break;
+        case 8: DoSendMessage(); break;
+        case 9: DoHistory(); break;
         default: std::cout << "  Unknown option" << std::endl; break;
         }
     }

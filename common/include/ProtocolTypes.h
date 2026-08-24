@@ -53,7 +53,8 @@ enum class MessageType : uint16_t {
     RoomMembersResponse = 0x2009,  // room -> gateway: список userId участников
 
     // --- Gateway <-> Message (internal) ---
-    SendMessageRequest = 0x3000,  // gateway -> message: сохранить + разослать
-    SendMessageResponse = 0x3001,  // message -> gateway: статус + messageId
-    FanoutMessage = 0x3002,  // message -> gateway: разослать всем в комнате
+    SendMessageRequest = 0x3000,  // gateway -> message: roomId, senderId, text
+    SendMessageResponse = 0x3001,  // message -> gateway: status + messageId + timestamp
+    HistoryRequest = 0x3002,  // gateway -> message: roomId, limit
+    HistoryResponse = 0x3003,  // message -> gateway: список сообщений
 };
