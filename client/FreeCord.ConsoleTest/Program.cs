@@ -66,6 +66,14 @@ connection.ChannelUnbanResponseReceived += r => Console.WriteLine(r.IsSuccess ? 
 connection.ChannelMuteResponseReceived += r => Console.WriteLine(r.IsSuccess ? "\n  [+] OK" : $"\n  [!] Failed, status={r.Status}");
 connection.ChannelUnmuteResponseReceived += r => Console.WriteLine(r.IsSuccess ? "\n  [+] OK" : $"\n  [!] Failed, status={r.Status}");
 connection.ChannelKicked += p => Console.WriteLine($"\n  [!] You were kicked from room {p.RoomId}");
+connection.IpBanListReceived += r =>
+{
+    Console.WriteLine("\n  --- banned IPs ---");
+    if (r.Ips.Count == 0) Console.WriteLine("  (none)");
+    foreach (var ip in r.Ips) Console.WriteLine($"  {ip}");
+};
+connection.IpBanResponseReceived += r => Console.WriteLine(r.IsSuccess ? "\n  [+] OK" : $"\n  [!] Failed, status={r.Status}");
+connection.IpUnbanResponseReceived += r => Console.WriteLine(r.IsSuccess ? "\n  [+] OK" : $"\n  [!] Failed, status={r.Status}");
 
 static string Describe(byte status) => status switch
 {
@@ -96,6 +104,7 @@ while (true)
     Console.WriteLine("10-List roles  11-Create role  12-Update role  13-Delete role  14-Assign role  15-Remove role");
     Console.WriteLine("16-Get channel overrides  17-Set channel override  18-Delete channel override");
     Console.WriteLine("19-Kick from channel  20-Unban from channel  21-Mute in channel  22-Unmute in channel");
+    Console.WriteLine("23-List banned IPs  24-Ban IP  25-Unban IP");
     Console.Write("> ");
 
     var input = Console.ReadLine();
@@ -240,6 +249,20 @@ while (true)
                     }
                 }
             }
+            break;
+
+        case "23":
+            await connection.ListBannedIpsAsync();
+            break;
+
+        case "24":
+            Console.Write("  IP: ");
+            await connection.BanIpAsync(Console.ReadLine() ?? "");
+            break;
+
+        case "25":
+            Console.Write("  IP: ");
+            await connection.UnbanIpAsync(Console.ReadLine() ?? "");
             break;
     }
 

@@ -24,6 +24,11 @@
 // closesocket() / close()
 void CloseSocket(socket_t s);
 
+// shutdown() — обрывает блокирующий recv() в потоке-владельце сокета, вызывается
+// из ДРУГОГО потока (например, при бане по IP); сам fd не закрывает — закрытие
+// остаётся за потоком-владельцем, как и раньше.
+void ShutdownSocket(socket_t s);
+
 // WSAGetLastError() / errno
 int GetLastSocketError();
 

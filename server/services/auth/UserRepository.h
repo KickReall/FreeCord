@@ -42,6 +42,11 @@ public:
     uint32_t GetUserPermissions(int64_t userId);
     std::vector<int64_t> GetUserRoleIds(int64_t userId);
 
+    void BanIp(const std::string& ip);
+    void UnbanIp(const std::string& ip);
+    bool IsIpBanned(const std::string& ip);
+    std::vector<std::string> ListBannedIps();
+
 private:
     SQLite::Database m_db;
     std::string m_sqlCreateUser;
@@ -56,4 +61,8 @@ private:
     std::string m_sqlRemoveRole;
     std::string m_sqlGetUserRolePermissions;
     std::string m_sqlListUserRoleIds;
+    std::string m_sqlBanIp;
+    std::string m_sqlUnbanIp;
+    std::string m_sqlIsIpBanned;
+    std::string m_sqlListBannedIps;
 };

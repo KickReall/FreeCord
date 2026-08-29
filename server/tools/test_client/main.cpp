@@ -14,6 +14,7 @@
 #include "MessageMessages.h"
 #include "ChatMessages.h"
 #include "RoleMessages.h"
+#include "IpBanMessages.h"
 
 constexpr const char* GATEWAY_HOST = "127.0.0.1";
 constexpr int GATEWAY_PORT = 6000;
@@ -159,6 +160,19 @@ void HandleFrame(const Frame& frame) {
         std::cout << "> " << std::flush;
         break;
     }
+    case MessageType::IpBanListResponse: {
+        auto p = IpBanListResponsePayload::Deserialize(frame.payload);
+        std::cout << "\n  --- banned IPs ---" << std::endl;
+        if (p.ips.empty()) std::cout << "  (none)" << std::endl;
+        for (const auto& ip : p.ips) std::cout << "  " << ip << std::endl;
+        break;
+    }
+    case MessageType::IpBanResponse:
+    case MessageType::IpUnbanResponse: {
+        auto p = StatusResponsePayload::Deserialize(frame.payload);
+        std::cout << "\n  " << (p.status == 0 ? "[+] OK" : "[!] Failed, status=" + std::to_string(p.status)) << std::endl;
+        break;
+    }
     case MessageType::UserJoined:
     case MessageType::UserLeft: {
         auto p = UserPresencePayload::Deserialize(frame.payload);
@@ -283,6 +297,12 @@ void DoChannelModeration(MessageType type) {
     Send(type, p.Serialize());
 }
 
+void DoIpTarget(MessageType type) {
+    IpPayload p;
+    std::cout << "  IP: "; std::cin >> p.ip;
+    Send(type, p.Serialize());
+}
+
 int main() {
     SocketLibraryGuard socketLibrary;
     if (!socketLibrary.IsInitialized()) {
@@ -322,6 +342,7 @@ int main() {
         std::cout << "10-List roles  11-Create role  12-Update role  13-Delete role  14-Assign role  15-Remove role" << std::endl;
         std::cout << "16-Get channel overrides  17-Set channel override  18-Delete channel override" << std::endl;
         std::cout << "19-Kick from channel  20-Unban from channel  21-Mute in channel  22-Unmute in channel" << std::endl;
+        std::cout << "23-List banned IPs  24-Ban IP  25-Unban IP" << std::endl;
         std::cout << "> ";
 
         int choice = 0;
@@ -351,6 +372,9 @@ int main() {
         case 20: DoChannelModeration(MessageType::ChannelUnbanRequest);  break;
         case 21: DoChannelModeration(MessageType::ChannelMuteRequest);   break;
         case 22: DoChannelModeration(MessageType::ChannelUnmuteRequest); break;
+        case 23: Send(MessageType::IpBanListRequest, {}); break;
+        case 24: DoIpTarget(MessageType::IpBanRequest);   break;
+        case 25: DoIpTarget(MessageType::IpUnbanRequest); break;
         default: std::cout << "  Unknown option" << std::endl; break;
         }
 

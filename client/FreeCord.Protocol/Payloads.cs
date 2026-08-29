@@ -391,6 +391,33 @@ public sealed class ChannelKickedNotification
     }
 }
 
+/// <summary>Общий payload для бана/разбана по IP — нужен только сам адрес.</summary>
+public sealed class IpTargetRequest
+{
+    public string Ip { get; set; } = "";
+
+    public byte[] Serialize()
+    {
+        using var w = new PayloadWriter();
+        w.WriteString(Ip);
+        return w.ToArray();
+    }
+}
+
+public sealed class IpBanListResponse
+{
+    public IReadOnlyList<string> Ips { get; init; } = Array.Empty<string>();
+
+    public static IpBanListResponse Deserialize(byte[] data)
+    {
+        using var r = new PayloadReader(data);
+        uint count = r.ReadUInt32();
+        var ips = new List<string>((int)count);
+        for (uint i = 0; i < count; i++) ips.Add(r.ReadString());
+        return new IpBanListResponse { Ips = ips };
+    }
+}
+
 public sealed class UserRegisteredNotification
 {
     public long UserId { get; init; }

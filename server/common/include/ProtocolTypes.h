@@ -42,6 +42,8 @@ enum class MessageType : uint16_t {
     // --- Gateway <-> Auth (internal) ---
     AuthenticateRequest = 0x1000,  // gateway -> auth: проверить логин/пароль
     AuthenticateResponse = 0x1001,  // auth -> gateway: статус + userId + sessionId
+    IsIpBannedRequest = 0x1002,  // internal only, gateway -> auth: ip — проверка перед TLS-хендшейком
+    IsIpBannedResponse = 0x1003,  // internal only, auth -> gateway: banned
 
     // --- Gateway <-> Room (internal) ---
     RoomCreateRequest = 0x2000,  // gateway -> room: name
@@ -98,4 +100,12 @@ enum class MessageType : uint16_t {
     GetUserPermissionsRequest = 0x400C,  // internal only, gateway -> auth: userId
     GetUserPermissionsResponse = 0x400D,  // internal only, auth -> gateway: permissions
     MyPermissions = 0x400E,  // gateway -> клиент, отправляется сразу после успешного логина
+
+    // --- Бан по IP на уровне всего сервера: те же типы клиент->gateway и gateway->auth ---
+    IpBanListRequest = 0x5000,  // (пусто) — список забаненных IP
+    IpBanListResponse = 0x5001,
+    IpBanRequest = 0x5002,  // ip
+    IpBanResponse = 0x5003,  // status
+    IpUnbanRequest = 0x5004,  // ip
+    IpUnbanResponse = 0x5005,  // status
 };

@@ -59,6 +59,9 @@ public sealed class FreeCordConnection : IAsyncDisposable
     public event Action<StatusResponse>? ChannelMuteResponseReceived;
     public event Action<StatusResponse>? ChannelUnmuteResponseReceived;
     public event Action<ChannelKickedNotification>? ChannelKicked;
+    public event Action<IpBanListResponse>? IpBanListReceived;
+    public event Action<StatusResponse>? IpBanResponseReceived;
+    public event Action<StatusResponse>? IpUnbanResponseReceived;
     public event Action<BroadcastTextMessage>? MessageReceived;
     public event Action<UserPresence>? UserJoined;
     public event Action<UserPresence>? UserLeft;
@@ -282,6 +285,15 @@ public sealed class FreeCordConnection : IAsyncDisposable
             case MessageType.ChannelKicked:
                 ChannelKicked?.Invoke(ChannelKickedNotification.Deserialize(frame.Payload));
                 break;
+            case MessageType.IpBanListResponse:
+                IpBanListReceived?.Invoke(IpBanListResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.IpBanResponse:
+                IpBanResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.IpUnbanResponse:
+                IpUnbanResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
         }
     }
 
@@ -351,6 +363,14 @@ public sealed class FreeCordConnection : IAsyncDisposable
 
     public Task UnmuteInChannelAsync(long roomId, long userId) =>
         SendAsync(MessageType.ChannelUnmuteRequest, new RoomMembershipRequest { RoomId = roomId, UserId = userId }.Serialize());
+
+    public Task ListBannedIpsAsync() => SendAsync(MessageType.IpBanListRequest);
+
+    public Task BanIpAsync(string ip) =>
+        SendAsync(MessageType.IpBanRequest, new IpTargetRequest { Ip = ip }.Serialize());
+
+    public Task UnbanIpAsync(string ip) =>
+        SendAsync(MessageType.IpUnbanRequest, new IpTargetRequest { Ip = ip }.Serialize());
 
     public async ValueTask DisposeAsync()
     {

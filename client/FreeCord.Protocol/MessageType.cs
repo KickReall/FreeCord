@@ -47,6 +47,14 @@ public enum MessageType : ushort
 	ChannelUnmuteRequest = 0x2018,
 	ChannelUnmuteResponse = 0x2019,
 
+	// Бан по IP на уровне всего сервера
+	IpBanListRequest = 0x5000,
+	IpBanListResponse = 0x5001,
+	IpBanRequest = 0x5002,
+	IpBanResponse = 0x5003,
+	IpUnbanRequest = 0x5004,
+	IpUnbanResponse = 0x5005,
+
 	HistoryRequest = 0x3002,
 	HistoryResponse = 0x3003,
 

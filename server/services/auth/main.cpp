@@ -7,6 +7,7 @@
 #include "AuthMessages.h"
 #include "RoomMessages.h"
 #include "RoleMessages.h"
+#include "IpBanMessages.h"
 #include "UserRepository.h"
 #include "PasswordHasher.h"
 #include "Config.h"
@@ -124,6 +125,37 @@ void HandleGetUserPermissions(socket_t clientSocket, UserRepository& repo, const
     SendFrame(clientSocket, static_cast<uint16_t>(MessageType::GetUserPermissionsResponse), frame.sequence, response.Serialize());
 }
 
+void HandleIsIpBanned(socket_t clientSocket, UserRepository& repo, const Frame& frame) {
+    auto request = IpPayload::Deserialize(frame.payload);
+    IpBanStatusPayload response;
+    response.banned = repo.IsIpBanned(request.ip) ? 1 : 0;
+    SendFrame(clientSocket, static_cast<uint16_t>(MessageType::IsIpBannedResponse), frame.sequence, response.Serialize());
+}
+
+void HandleIpBanList(socket_t clientSocket, UserRepository& repo, const Frame& frame) {
+    IpBanListResponsePayload response;
+    response.ips = repo.ListBannedIps();
+    SendFrame(clientSocket, static_cast<uint16_t>(MessageType::IpBanListResponse), frame.sequence, response.Serialize());
+}
+
+void HandleIpBan(socket_t clientSocket, UserRepository& repo, const Frame& frame) {
+    auto request = IpPayload::Deserialize(frame.payload);
+    std::cout << "[auth] Ban IP " << request.ip << std::endl;
+    repo.BanIp(request.ip);
+    StatusResponsePayload response;
+    response.status = 0;
+    SendFrame(clientSocket, static_cast<uint16_t>(MessageType::IpBanResponse), frame.sequence, response.Serialize());
+}
+
+void HandleIpUnban(socket_t clientSocket, UserRepository& repo, const Frame& frame) {
+    auto request = IpPayload::Deserialize(frame.payload);
+    std::cout << "[auth] Unban IP " << request.ip << std::endl;
+    repo.UnbanIp(request.ip);
+    StatusResponsePayload response;
+    response.status = 0;
+    SendFrame(clientSocket, static_cast<uint16_t>(MessageType::IpUnbanResponse), frame.sequence, response.Serialize());
+}
+
 void HandleClient(socket_t clientSocket, UserRepository& repo) {
     Frame frame;
     FrameResult result = ReceiveFrame(clientSocket, frame);
@@ -144,6 +176,10 @@ void HandleClient(socket_t clientSocket, UserRepository& repo) {
     case MessageType::RoleAssignRequest:        HandleRoleAssign(clientSocket, repo, frame); break;
     case MessageType::RoleRemoveRequest:        HandleRoleRemove(clientSocket, repo, frame); break;
     case MessageType::GetUserPermissionsRequest: HandleGetUserPermissions(clientSocket, repo, frame); break;
+    case MessageType::IsIpBannedRequest:        HandleIsIpBanned(clientSocket, repo, frame); break;
+    case MessageType::IpBanListRequest:         HandleIpBanList(clientSocket, repo, frame); break;
+    case MessageType::IpBanRequest:             HandleIpBan(clientSocket, repo, frame); break;
+    case MessageType::IpUnbanRequest:           HandleIpUnban(clientSocket, repo, frame); break;
     default:
         std::cout << "[auth] Unexpected messageType: " << frame.messageType << std::endl;
         break;

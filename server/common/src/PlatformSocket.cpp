@@ -2,6 +2,7 @@
 
 #ifndef _WIN32
     #include <cerrno>
+    #include <csignal>
 #endif
 
 void CloseSocket(socket_t s) {
@@ -9,6 +10,14 @@ void CloseSocket(socket_t s) {
     closesocket(s);
 #else
     close(s);
+#endif
+}
+
+void ShutdownSocket(socket_t s) {
+#ifdef _WIN32
+    shutdown(s, SD_BOTH);
+#else
+    shutdown(s, SHUT_RDWR);
 #endif
 }
 
@@ -46,6 +55,12 @@ SocketLibraryGuard::SocketLibraryGuard() {
     WSADATA wsaData;
     m_initialized = (WSAStartup(MAKEWORD(2, 2), &wsaData) == 0);
 #else
+    // Без этого запись в сокет, который уже закрыт на другом конце (или сами
+    // прервали через ShutdownSocket — например, при бане по IP), убивает весь
+    // процесс сигналом SIGPIPE по умолчанию. Windows такого сигнала не знает —
+    // там send() на такой сокет просто возвращает SOCKET_ERROR, поэтому баг
+    // проявлялся только на Linux/WSL.
+    signal(SIGPIPE, SIG_IGN);
     m_initialized = true;
 #endif
 }

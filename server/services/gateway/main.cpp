@@ -14,6 +14,7 @@
 #include "MessageMessages.h"
 #include "ChatMessages.h"
 #include "RoleMessages.h"
+#include "IpBanMessages.h"
 #include "Permissions.h"
 #include "ServiceClient.h"
 #include "SessionManager.h"
@@ -29,6 +30,7 @@ std::unique_ptr<TlsContext> g_tls;
 
 struct ClientContext {
     socket_t socket = kInvalidSocket;         // нужен для SetRecvTimeout/CloseSocket — TLS работает поверх него
+    std::string remoteIp;                     // адрес клиента, захваченный на accept() — для бана по IP
     std::shared_ptr<ITransport> transport;    // TLS-соединение с клиентом; до успешного handshake равен nullptr
     SessionPtr session;   // nullptr, пока не залогинен
 };
@@ -41,6 +43,29 @@ bool SendToSession(const SessionPtr& session, MessageType type, const std::vecto
 
 bool HasPermission(const SessionPtr& session, Permission permission) {
     return (session->permissions.load() & static_cast<uint32_t>(permission)) != 0;
+}
+
+// Проверяется до TLS-хендшейка — забаненный IP не должен тратить ресурсы даже на него.
+bool IsIpBanned(const std::string& ip) {
+    IpPayload request;
+    request.ip = ip;
+
+    Frame response;
+    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, MessageType::IsIpBannedRequest,
+        request.Serialize(), MessageType::IsIpBannedResponse, response, g_config.gateway.serviceCallTimeoutMs)) {
+        return false; // auth_service недоступен — не блокируем на ровном месте
+    }
+    return IpBanStatusPayload::Deserialize(response.payload).banned != 0;
+}
+
+// Немедленно обрывает все текущие сессии с этого IP (по требованию — бан должен
+// действовать сразу, а не только на будущие попытки подключиться). ShutdownSocket
+// лишь прерывает блокирующий recv() в потоке-владельце сессии — тот сам довершит
+// очистку (RemoveSession, CloseSocket) обычным путём, как при любом разрыве связи.
+void DisconnectSessionsForIp(const std::string& ip) {
+    for (const auto& session : g_sessions.GetSessionsForIp(ip)) {
+        ShutdownSocket(session->rawSocket);
+    }
 }
 
 // Разослать всем залогиненным клиентам, независимо от комнат.
@@ -148,7 +173,7 @@ void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
         response = AuthResponsePayload::Deserialize(authResponse.payload);
 
         if (response.status == 0 && !isRegister) {
-            ctx.session = g_sessions.AddSession(response.userId, request.username, ctx.transport);
+            ctx.session = g_sessions.AddSession(response.userId, request.username, ctx.transport, ctx.remoteIp, ctx.socket);
             response.sessionId = ctx.session->sessionId;
             std::cout << "[gateway] '" << request.username << "' logged in (userId="
                 << response.userId << "), online=" << g_sessions.OnlineCount() << std::endl;
@@ -566,9 +591,63 @@ void HandleChannelUnmute(ClientContext& ctx, const Frame& frame) {
     SendToSession(ctx.session, MessageType::ChannelUnmuteResponse, roomResponse.payload);
 }
 
-void ClientThread(socket_t clientSocket) {
+void HandleIpBanList(ClientContext& ctx, const Frame& frame) {
+    if (!HasPermission(ctx.session, Permission::ManageServerBans)) {
+        IpBanListResponsePayload forbidden; // пустой список — не выдаём даже намёк на содержимое
+        SendToSession(ctx.session, MessageType::IpBanListResponse, forbidden.Serialize());
+        return;
+    }
+    Frame authResponse;
+    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, MessageType::IpBanListRequest, {},
+        MessageType::IpBanListResponse, authResponse, g_config.gateway.serviceCallTimeoutMs)) {
+        return;
+    }
+    SendToSession(ctx.session, MessageType::IpBanListResponse, authResponse.payload);
+}
+
+void HandleIpBan(ClientContext& ctx, const Frame& frame) {
+    if (!HasPermission(ctx.session, Permission::ManageServerBans)) {
+        StatusResponsePayload forbidden;
+        forbidden.status = 254;
+        SendToSession(ctx.session, MessageType::IpBanResponse, forbidden.Serialize());
+        return;
+    }
+    Frame authResponse;
+    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, MessageType::IpBanRequest, frame.payload,
+        MessageType::IpBanResponse, authResponse, g_config.gateway.serviceCallTimeoutMs)) {
+        return;
+    }
+    SendToSession(ctx.session, MessageType::IpBanResponse, authResponse.payload);
+
+    auto request = IpPayload::Deserialize(frame.payload);
+    DisconnectSessionsForIp(request.ip);
+}
+
+void HandleIpUnban(ClientContext& ctx, const Frame& frame) {
+    if (!HasPermission(ctx.session, Permission::ManageServerBans)) {
+        StatusResponsePayload forbidden;
+        forbidden.status = 254;
+        SendToSession(ctx.session, MessageType::IpUnbanResponse, forbidden.Serialize());
+        return;
+    }
+    Frame authResponse;
+    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, MessageType::IpUnbanRequest, frame.payload,
+        MessageType::IpUnbanResponse, authResponse, g_config.gateway.serviceCallTimeoutMs)) {
+        return;
+    }
+    SendToSession(ctx.session, MessageType::IpUnbanResponse, authResponse.payload);
+}
+
+void ClientThread(socket_t clientSocket, std::string remoteIp) {
     ClientContext ctx;
     ctx.socket = clientSocket;
+    ctx.remoteIp = remoteIp;
+
+    if (IsIpBanned(remoteIp)) {
+        std::cout << "[gateway] Rejected connection from banned IP " << remoteIp << std::endl;
+        CloseSocket(clientSocket);
+        return;
+    }
 
     // Ставим таймаут на чтение до хендшейка — иначе зависший на TLS клиент
     // навсегда займёт поток, так же как раньше это грозило голому recv().
@@ -580,7 +659,7 @@ void ClientThread(socket_t clientSocket) {
         CloseSocket(ctx.socket);
         return;
     }
-    std::cout << "[gateway] Client connected (TLS)" << std::endl;
+    std::cout << "[gateway] Client connected (TLS), ip=" << remoteIp << std::endl;
 
     auto lastActivity = std::chrono::steady_clock::now();
 
@@ -642,6 +721,9 @@ void ClientThread(socket_t clientSocket) {
         case MessageType::ChannelUnbanRequest:  HandleChannelUnban(ctx, frame);  break;
         case MessageType::ChannelMuteRequest:   HandleChannelMute(ctx, frame);   break;
         case MessageType::ChannelUnmuteRequest: HandleChannelUnmute(ctx, frame); break;
+        case MessageType::IpBanListRequest: HandleIpBanList(ctx, frame); break;
+        case MessageType::IpBanRequest:     HandleIpBan(ctx, frame);     break;
+        case MessageType::IpUnbanRequest:   HandleIpUnban(ctx, frame);   break;
         case MessageType::Ping:
             // Отвечаем только залогиненным — до логина сессии ещё нет
             if (ctx.session) SendToSession(ctx.session, MessageType::Pong, frame.payload);
@@ -702,9 +784,14 @@ int main() {
     std::cout << "[gateway] Listening on port " << g_config.gateway.port << std::endl;
 
     while (true) {
-        socket_t clientSocket = accept(listenSocket, nullptr, nullptr);
+        sockaddr_in clientAddr{};
+        socklen_t addrLen = sizeof(clientAddr);
+        socket_t clientSocket = accept(listenSocket, reinterpret_cast<sockaddr*>(&clientAddr), &addrLen);
         if (clientSocket == kInvalidSocket) continue;
-        std::thread(ClientThread, clientSocket).detach();
+
+        char ipBuf[INET_ADDRSTRLEN] = {};
+        inet_ntop(AF_INET, &clientAddr.sin_addr, ipBuf, sizeof(ipBuf));
+        std::thread(ClientThread, clientSocket, std::string(ipBuf)).detach();
     }
 
     return 0;

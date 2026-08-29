@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <vector>
 #include "Transport.h"
+#include "PlatformSocket.h"
 #include <atomic>
 
 struct Session {
@@ -15,6 +16,12 @@ struct Session {
     std::string username;
     std::shared_ptr<ITransport> transport;
     std::mutex sendMutex;
+
+    // IP клиента и сырой сокет — нужны для бана по IP: найти сессии с этим адресом
+    // и прервать их немедленно через ShutdownSocket, независимо от TLS-обёртки.
+    // Оба пишутся один раз при создании сессии, как username — без мьютекса.
+    std::string remoteIp;
+    socket_t rawSocket = kInvalidSocket;
 
     // Комната, открытая пользователем сейчас. 0 = ни одной.
     // atomic — читается из чужих потоков при рассылке.
@@ -35,9 +42,12 @@ using SessionPtr = std::shared_ptr<Session>;
 
 class SessionManager {
 public:
-    SessionPtr AddSession(int64_t userId, const std::string& username, std::shared_ptr<ITransport> transport);
+    SessionPtr AddSession(int64_t userId, const std::string& username, std::shared_ptr<ITransport> transport,
+        const std::string& remoteIp, socket_t rawSocket);
     void RemoveSession(uint64_t sessionId);
     std::vector<SessionPtr> GetSessionsForUsers(const std::vector<int64_t>& userIds);
+    // Все сессии, подключённые с этого IP — для немедленного разрыва при бане.
+    std::vector<SessionPtr> GetSessionsForIp(const std::string& ip);
     // Все активные сессии — для рассылки глобальных событий
     std::vector<SessionPtr> GetAllSessions();
     // Все, кто сейчас открыл эту комнату

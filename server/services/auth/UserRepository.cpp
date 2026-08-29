@@ -22,6 +22,10 @@ UserRepository::UserRepository(const std::string& dbPath)
     m_sqlRemoveRole = LoadSqlFile("db/auth/queries/remove_role.sql");
     m_sqlGetUserRolePermissions = LoadSqlFile("db/auth/queries/get_user_role_permissions.sql");
     m_sqlListUserRoleIds = LoadSqlFile("db/auth/queries/list_user_role_ids.sql");
+    m_sqlBanIp = LoadSqlFile("db/auth/queries/ban_ip.sql");
+    m_sqlUnbanIp = LoadSqlFile("db/auth/queries/unban_ip.sql");
+    m_sqlIsIpBanned = LoadSqlFile("db/auth/queries/is_ip_banned.sql");
+    m_sqlListBannedIps = LoadSqlFile("db/auth/queries/list_banned_ips.sql");
 }
 
 int64_t UserRepository::CreateUser(const std::string& username, const std::string& passwordHash, const std::string& passwordSalt) {
@@ -172,6 +176,33 @@ std::vector<int64_t> UserRepository::GetUserRoleIds(int64_t userId) {
     query.bind(1, userId);
     while (query.executeStep()) {
         result.push_back(query.getColumn(0).getInt64());
+    }
+    return result;
+}
+
+void UserRepository::BanIp(const std::string& ip) {
+    SQLite::Statement query(m_db, m_sqlBanIp);
+    query.bind(1, ip);
+    query.exec();
+}
+
+void UserRepository::UnbanIp(const std::string& ip) {
+    SQLite::Statement query(m_db, m_sqlUnbanIp);
+    query.bind(1, ip);
+    query.exec();
+}
+
+bool UserRepository::IsIpBanned(const std::string& ip) {
+    SQLite::Statement query(m_db, m_sqlIsIpBanned);
+    query.bind(1, ip);
+    return query.executeStep();
+}
+
+std::vector<std::string> UserRepository::ListBannedIps() {
+    std::vector<std::string> result;
+    SQLite::Statement query(m_db, m_sqlListBannedIps);
+    while (query.executeStep()) {
+        result.push_back(query.getColumn(0).getString());
     }
     return result;
 }
