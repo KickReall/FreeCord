@@ -3,6 +3,7 @@
 #include <optional>
 #include <vector>
 #include <cstdint>
+#include <mutex>
 #include <SQLiteCpp/SQLiteCpp.h>
 
 struct UserRecord {
@@ -21,6 +22,11 @@ struct RoleRecord {
 
 enum class RoleOpResult { Ok, NotFound, SystemRole, NameTaken };
 
+struct UserRoleData {
+    uint32_t permissions = 0;
+    std::vector<int64_t> roleIds;
+};
+
 class UserRepository {
 public:
     explicit UserRepository(const std::string& dbPath);
@@ -38,9 +44,10 @@ public:
     // false — роль уже была назначена / не была назначена
     bool AssignRole(int64_t userId, int64_t roleId);
     bool RemoveRole(int64_t userId, int64_t roleId);
-    // Объединение прав всех ролей пользователя; admin — особый случай (см. Permissions.h)
-    uint32_t GetUserPermissions(int64_t userId);
-    std::vector<int64_t> GetUserRoleIds(int64_t userId);
+    // Объединение прав всех ролей пользователя (admin — особый случай, см. Permissions.h)
+    // и список id этих ролей — раньше были двумя отдельными запросами по одному и
+    // тому же user_roles JOIN roles, слиты в один проход по тем же строкам.
+    UserRoleData GetUserRoleData(int64_t userId);
 
     void BanIp(const std::string& ip);
     void UnbanIp(const std::string& ip);
@@ -49,6 +56,7 @@ public:
 
 private:
     SQLite::Database m_db;
+    std::mutex m_mutex;
     std::string m_sqlCreateUser;
     std::string m_sqlFindByUsername;
     std::string m_sqlCountUsers;
@@ -60,7 +68,6 @@ private:
     std::string m_sqlDeleteRole;
     std::string m_sqlRemoveRole;
     std::string m_sqlGetUserRolePermissions;
-    std::string m_sqlListUserRoleIds;
     std::string m_sqlBanIp;
     std::string m_sqlUnbanIp;
     std::string m_sqlIsIpBanned;

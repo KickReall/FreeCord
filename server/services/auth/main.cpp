@@ -1,5 +1,6 @@
 #include <iostream>
 #include <memory>
+#include <thread>
 
 #include "PlatformSocket.h"
 #include "TcpFramer.h"
@@ -119,9 +120,10 @@ void HandleRoleRemove(socket_t clientSocket, UserRepository& repo, const Frame& 
 
 void HandleGetUserPermissions(socket_t clientSocket, UserRepository& repo, const Frame& frame) {
     auto request = GetUserPermissionsRequestPayload::Deserialize(frame.payload);
+    auto roleData = repo.GetUserRoleData(request.userId);
     MyPermissionsPayload response;
-    response.permissions = repo.GetUserPermissions(request.userId);
-    response.roleIds = repo.GetUserRoleIds(request.userId);
+    response.permissions = roleData.permissions;
+    response.roleIds = std::move(roleData.roleIds);
     SendFrame(clientSocket, static_cast<uint16_t>(MessageType::GetUserPermissionsResponse), frame.sequence, response.Serialize());
 }
 
@@ -214,22 +216,24 @@ int main() {
     }
     std::cout << "[auth] Database ready at " << config.auth.dbPath << std::endl;
 
-    socket_t listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    sockaddr_in serverAddr{};
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = INADDR_ANY;
-    serverAddr.sin_port = htons(config.auth.port);
-
-    bind(listenSocket, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
-    listen(listenSocket, SOMAXCONN);
+    socket_t listenSocket = CreateListenSocket(config.auth.port);
+    if (listenSocket == kInvalidSocket) {
+        std::cerr << "[auth] Bind failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "[auth] Listening on port " << config.auth.port << std::endl;
 
+    // Поток на подключение — как у room_service/message_service/gateway. Раньше
+    // auth_service обрабатывал соединения строго по одному в главном потоке; это
+    // самый нагруженный внутренний сервис (логин с намеренно медленным PBKDF2,
+    // да ещё и IsIpBannedRequest на КАЖДОЕ новое подключение к gateway), так что
+    // один медленный вызов держал в очереди вообще всех остальных. UserRepository
+    // теперь потокобезопасен (свой m_mutex, как у RoomRepository).
     while (true) {
         socket_t clientSocket = accept(listenSocket, nullptr, nullptr);
         if (clientSocket == kInvalidSocket) continue;
-        std::cout << "[auth] Client connected" << std::endl;
-        HandleClient(clientSocket, *repo);
+        std::thread(HandleClient, clientSocket, std::ref(*repo)).detach();
     }
 
     CloseSocket(listenSocket);

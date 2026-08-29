@@ -1,4 +1,5 @@
 #include "PlatformSocket.h"
+#include <cstdint>
 
 #ifndef _WIN32
     #include <cerrno>
@@ -48,6 +49,26 @@ void SetRecvTimeout(socket_t s, int milliseconds) {
     timeout.tv_usec = (milliseconds % 1000) * 1000;
     setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 #endif
+}
+
+socket_t CreateListenSocket(int port) {
+    socket_t listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listenSocket == kInvalidSocket) return kInvalidSocket;
+
+    int reuse = 1;
+    setsockopt(listenSocket, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(static_cast<uint16_t>(port));
+
+    if (bind(listenSocket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == -1) {
+        CloseSocket(listenSocket);
+        return kInvalidSocket;
+    }
+    listen(listenSocket, SOMAXCONN);
+    return listenSocket;
 }
 
 SocketLibraryGuard::SocketLibraryGuard() {

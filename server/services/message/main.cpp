@@ -105,14 +105,11 @@ int main() {
     }
     std::cout << "[message] Database ready at " << g_config.message.dbPath << std::endl;
 
-    socket_t listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    sockaddr_in serverAddr{};
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = INADDR_ANY;
-    serverAddr.sin_port = htons(g_config.message.port);
-
-    bind(listenSocket, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
-    listen(listenSocket, SOMAXCONN);
+    socket_t listenSocket = CreateListenSocket(g_config.message.port);
+    if (listenSocket == kInvalidSocket) {
+        std::cerr << "[message] Bind failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "[message] Listening on port " << g_config.message.port << std::endl;
 

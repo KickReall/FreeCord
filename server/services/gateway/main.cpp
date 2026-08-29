@@ -45,14 +45,47 @@ bool HasPermission(const SessionPtr& session, Permission permission) {
     return (session->permissions.load() & static_cast<uint32_t>(permission)) != 0;
 }
 
+// Обёртки над CallService для каждого внутреннего сервиса — раньше host+порт+таймаут
+// повторялись в каждом вызове по всему файлу; теперь один источник правды на сервис.
+bool CallAuth(MessageType requestType, const std::vector<uint8_t>& payload, MessageType responseType, Frame& outResponse) {
+    return CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, requestType, payload,
+        responseType, outResponse, g_config.gateway.serviceCallTimeoutMs);
+}
+bool CallRoom(MessageType requestType, const std::vector<uint8_t>& payload, MessageType responseType, Frame& outResponse) {
+    return CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, requestType, payload,
+        responseType, outResponse, g_config.gateway.serviceCallTimeoutMs);
+}
+bool CallMessage(MessageType requestType, const std::vector<uint8_t>& payload, MessageType responseType, Frame& outResponse) {
+    return CallService(g_config.gateway.serviceHost.c_str(), g_config.message.port, requestType, payload,
+        responseType, outResponse, g_config.gateway.serviceCallTimeoutMs);
+}
+
+// Общий паттерн большинства Handle*: не хватает прав — синтезируем "отказано" самостоятельно,
+// не трогая сервис; иначе форвардим frame.payload как есть и пересылаем ответ сервиса клиенту
+// без разбора. Возвращает сырой ответ сервиса (пустой Frame — если прав не хватило или сервис
+// недоступен), чтобы вызывающая сторона могла доразобрать его для доп. действий (кик, бан по IP).
+template <typename CallFn, typename ForbiddenPayload>
+Frame ProxyToService(ClientContext& ctx, const Frame& frame, Permission permission, CallFn call,
+    MessageType requestType, MessageType responseType, const ForbiddenPayload& forbidden) {
+    if (!HasPermission(ctx.session, permission)) {
+        SendToSession(ctx.session, responseType, forbidden.Serialize());
+        return {};
+    }
+    Frame response;
+    if (!call(requestType, frame.payload, responseType, response)) {
+        return {};
+    }
+    SendToSession(ctx.session, responseType, response.payload);
+    return response;
+}
+
 // Проверяется до TLS-хендшейка — забаненный IP не должен тратить ресурсы даже на него.
 bool IsIpBanned(const std::string& ip) {
     IpPayload request;
     request.ip = ip;
 
     Frame response;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, MessageType::IsIpBannedRequest,
-        request.Serialize(), MessageType::IsIpBannedResponse, response, g_config.gateway.serviceCallTimeoutMs)) {
+    if (!CallAuth(MessageType::IsIpBannedRequest, request.Serialize(), MessageType::IsIpBannedResponse, response)) {
         return false; // auth_service недоступен — не блокируем на ровном месте
     }
     return IpBanStatusPayload::Deserialize(response.payload).banned != 0;
@@ -99,9 +132,7 @@ uint32_t EffectivePermissionsInRoom(const SessionPtr& session, int64_t roomId) {
     Frame overridesResponse;
     ChannelOverridesRequestPayload request;
     request.roomId = roomId;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::ChannelOverridesRequest,
-        request.Serialize(), MessageType::ChannelOverridesResponse, overridesResponse,
-        g_config.gateway.serviceCallTimeoutMs)) {
+    if (!CallRoom(MessageType::ChannelOverridesRequest, request.Serialize(), MessageType::ChannelOverridesResponse, overridesResponse)) {
         return base; // room_service недоступен — не блокируем на ровном месте, работаем с базовыми правами
     }
 
@@ -132,9 +163,7 @@ ChannelModerationStatusResponsePayload GetModerationStatus(const SessionPtr& ses
     request.userId = session->userId;
 
     Frame response;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::ChannelModerationStatusRequest,
-        request.Serialize(), MessageType::ChannelModerationStatusResponse, response,
-        g_config.gateway.serviceCallTimeoutMs)) {
+    if (!CallRoom(MessageType::ChannelModerationStatusRequest, request.Serialize(), MessageType::ChannelModerationStatusResponse, response)) {
         return result; // room_service недоступен — не блокируем на ровном месте
     }
     return ChannelModerationStatusResponsePayload::Deserialize(response.payload);
@@ -158,11 +187,11 @@ void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
     auto request = AuthRequestPayload::Deserialize(frame.payload);
 
     Frame authResponse;
-    bool ok = CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port,
+    bool ok = CallAuth(
         isRegister ? MessageType::RegisterRequest : MessageType::AuthRequest,
         frame.payload,
         isRegister ? MessageType::RegisterResponse : MessageType::AuthResponse,
-        authResponse, g_config.gateway.serviceCallTimeoutMs);
+        authResponse);
 
     AuthResponsePayload response;
     if (!ok) {
@@ -183,9 +212,8 @@ void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
             Frame permResponse;
             GetUserPermissionsRequestPayload permRequest;
             permRequest.userId = response.userId;
-            if (CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, MessageType::GetUserPermissionsRequest,
-                permRequest.Serialize(), MessageType::GetUserPermissionsResponse, permResponse,
-                g_config.gateway.serviceCallTimeoutMs)) {
+            if (CallAuth(MessageType::GetUserPermissionsRequest, permRequest.Serialize(),
+                MessageType::GetUserPermissionsResponse, permResponse)) {
                 auto perms = MyPermissionsPayload::Deserialize(permResponse.payload);
                 ctx.session->permissions.store(perms.permissions);
                 ctx.session->roleIds = perms.roleIds;
@@ -204,9 +232,8 @@ void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
             sysMessage.text = text;
 
             Frame saveResponse;
-            if (CallService(g_config.gateway.serviceHost.c_str(), g_config.message.port, MessageType::SendMessageRequest,
-                sysMessage.Serialize(), MessageType::SendMessageResponse, saveResponse,
-                g_config.gateway.serviceCallTimeoutMs)) {
+            if (CallMessage(MessageType::SendMessageRequest, sysMessage.Serialize(),
+                MessageType::SendMessageResponse, saveResponse)) {
 
                 auto saved = SendMessageResponsePayload::Deserialize(saveResponse.payload);
                 if (saved.status == 0) {
@@ -278,8 +305,7 @@ void HandleLeaveRoom(ClientContext& ctx, const Frame& frame) {
 
 void HandleRoomList(ClientContext& ctx, const Frame& frame) {
     Frame roomResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::RoomListRequest, {},
-        MessageType::RoomListResponse, roomResponse, g_config.gateway.serviceCallTimeoutMs)) {
+    if (!CallRoom(MessageType::RoomListRequest, {}, MessageType::RoomListResponse, roomResponse)) {
         return;
     }
 
@@ -295,21 +321,9 @@ void HandleRoomList(ClientContext& ctx, const Frame& frame) {
 }
 
 void HandleRoomCreate(ClientContext& ctx, const Frame& frame) {
-    if (!HasPermission(ctx.session, Permission::ManageChannel)) {
-        RoomCreateResponsePayload forbidden;
-        forbidden.status = 254;
-        SendToSession(ctx.session, MessageType::RoomCreateResponse, forbidden.Serialize());
-        return;
-    }
-
-    Frame roomResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::RoomCreateRequest, frame.payload,
-        MessageType::RoomCreateResponse, roomResponse, g_config.gateway.serviceCallTimeoutMs)) {
-        return;
-    }
-
-    // Ответ создателю
-    SendToSession(ctx.session, MessageType::RoomCreateResponse, roomResponse.payload);
+    Frame roomResponse = ProxyToService(ctx, frame, Permission::ManageChannel, CallRoom,
+        MessageType::RoomCreateRequest, MessageType::RoomCreateResponse, RoomCreateResponsePayload{254});
+    if (roomResponse.messageType == 0) return; // отказано или сервис недоступен — ProxyToService уже ответил клиенту
 
     // Если создание удалось — уведомляем остальных
     auto created = RoomCreateResponsePayload::Deserialize(roomResponse.payload);
@@ -328,9 +342,20 @@ void HandleRoomCreate(ClientContext& ctx, const Frame& frame) {
 }
 
 void HandleHistory(ClientContext& ctx, const Frame& frame) {
+    auto request = HistoryRequestPayload::Deserialize(frame.payload);
+
+    // Раньше истории отдавались без проверки прав вовсе — та же дыра, которую
+    // JoinRoom и TextMessage уже закрывают: без OpenChannel читать содержимое нельзя.
+    if ((EffectivePermissionsInRoom(ctx.session, request.roomId) & static_cast<uint32_t>(Permission::OpenChannel)) == 0) {
+        std::cout << "[gateway] userId=" << ctx.session->userId
+            << " lacks OpenChannel in room " << request.roomId << " (history)" << std::endl;
+        HistoryResponsePayload forbidden; // пустая история — не выдаём даже намёк на содержимое
+        SendToSession(ctx.session, MessageType::HistoryResponse, forbidden.Serialize());
+        return;
+    }
+
     Frame historyResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.message.port, MessageType::HistoryRequest, frame.payload,
-        MessageType::HistoryResponse, historyResponse, g_config.gateway.serviceCallTimeoutMs)) {
+    if (!CallMessage(MessageType::HistoryRequest, frame.payload, MessageType::HistoryResponse, historyResponse)) {
         return;
     }
     SendToSession(ctx.session, MessageType::HistoryResponse, historyResponse.payload);
@@ -367,9 +392,7 @@ void HandleTextMessage(ClientContext& ctx, const Frame& frame) {
     saveRequest.text = clientMessage.text;
 
     Frame saveResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.message.port, MessageType::SendMessageRequest,
-        saveRequest.Serialize(), MessageType::SendMessageResponse, saveResponse,
-        g_config.gateway.serviceCallTimeoutMs)) {
+    if (!CallMessage(MessageType::SendMessageRequest, saveRequest.Serialize(), MessageType::SendMessageResponse, saveResponse)) {
         std::cout << "[gateway] message_service unavailable" << std::endl;
         return;
     }
@@ -396,246 +419,101 @@ void HandleTextMessage(ClientContext& ctx, const Frame& frame) {
         << "' delivered to " << delivered << " online users" << std::endl;
 }
 
-// Список ролей виден любому залогиненному пользователю — сама по себе не секрет.
+// Список ролей виден любому залогиненному пользователю — сама по себе не секрет,
+// поэтому единственная из всей группы обходится без ProxyToService.
 void HandleRoleList(ClientContext& ctx, const Frame& frame) {
     Frame roleResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, MessageType::RoleListRequest, {},
-        MessageType::RoleListResponse, roleResponse, g_config.gateway.serviceCallTimeoutMs)) {
+    if (!CallAuth(MessageType::RoleListRequest, {}, MessageType::RoleListResponse, roleResponse)) {
         return;
     }
     SendToSession(ctx.session, MessageType::RoleListResponse, roleResponse.payload);
 }
 
 void HandleRoleCreate(ClientContext& ctx, const Frame& frame) {
-    if (!HasPermission(ctx.session, Permission::ManageRoles)) {
-        RoleCreateResponsePayload forbidden;
-        forbidden.status = 254;
-        SendToSession(ctx.session, MessageType::RoleCreateResponse, forbidden.Serialize());
-        return;
-    }
-    Frame roleResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, MessageType::RoleCreateRequest, frame.payload,
-        MessageType::RoleCreateResponse, roleResponse, g_config.gateway.serviceCallTimeoutMs)) {
-        return;
-    }
-    SendToSession(ctx.session, MessageType::RoleCreateResponse, roleResponse.payload);
+    ProxyToService(ctx, frame, Permission::ManageRoles, CallAuth,
+        MessageType::RoleCreateRequest, MessageType::RoleCreateResponse, RoleCreateResponsePayload{254});
 }
 
 void HandleRoleUpdate(ClientContext& ctx, const Frame& frame) {
-    if (!HasPermission(ctx.session, Permission::ManageRoles)) {
-        StatusResponsePayload forbidden;
-        forbidden.status = 254;
-        SendToSession(ctx.session, MessageType::RoleUpdateResponse, forbidden.Serialize());
-        return;
-    }
-    Frame roleResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, MessageType::RoleUpdateRequest, frame.payload,
-        MessageType::RoleUpdateResponse, roleResponse, g_config.gateway.serviceCallTimeoutMs)) {
-        return;
-    }
-    SendToSession(ctx.session, MessageType::RoleUpdateResponse, roleResponse.payload);
+    ProxyToService(ctx, frame, Permission::ManageRoles, CallAuth,
+        MessageType::RoleUpdateRequest, MessageType::RoleUpdateResponse, StatusResponsePayload{254});
 }
 
 void HandleRoleDelete(ClientContext& ctx, const Frame& frame) {
-    if (!HasPermission(ctx.session, Permission::ManageRoles)) {
-        StatusResponsePayload forbidden;
-        forbidden.status = 254;
-        SendToSession(ctx.session, MessageType::RoleDeleteResponse, forbidden.Serialize());
-        return;
-    }
-    Frame roleResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, MessageType::RoleDeleteRequest, frame.payload,
-        MessageType::RoleDeleteResponse, roleResponse, g_config.gateway.serviceCallTimeoutMs)) {
-        return;
-    }
-    SendToSession(ctx.session, MessageType::RoleDeleteResponse, roleResponse.payload);
+    ProxyToService(ctx, frame, Permission::ManageRoles, CallAuth,
+        MessageType::RoleDeleteRequest, MessageType::RoleDeleteResponse, StatusResponsePayload{254});
 }
 
 void HandleRoleAssign(ClientContext& ctx, const Frame& frame) {
-    if (!HasPermission(ctx.session, Permission::ManageRoles)) {
-        StatusResponsePayload forbidden;
-        forbidden.status = 254;
-        SendToSession(ctx.session, MessageType::RoleAssignResponse, forbidden.Serialize());
-        return;
-    }
-    Frame roleResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, MessageType::RoleAssignRequest, frame.payload,
-        MessageType::RoleAssignResponse, roleResponse, g_config.gateway.serviceCallTimeoutMs)) {
-        return;
-    }
-    SendToSession(ctx.session, MessageType::RoleAssignResponse, roleResponse.payload);
+    ProxyToService(ctx, frame, Permission::ManageRoles, CallAuth,
+        MessageType::RoleAssignRequest, MessageType::RoleAssignResponse, StatusResponsePayload{254});
 }
 
 void HandleRoleRemove(ClientContext& ctx, const Frame& frame) {
-    if (!HasPermission(ctx.session, Permission::ManageRoles)) {
-        StatusResponsePayload forbidden;
-        forbidden.status = 254;
-        SendToSession(ctx.session, MessageType::RoleRemoveResponse, forbidden.Serialize());
-        return;
-    }
-    Frame roleResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, MessageType::RoleRemoveRequest, frame.payload,
-        MessageType::RoleRemoveResponse, roleResponse, g_config.gateway.serviceCallTimeoutMs)) {
-        return;
-    }
-    SendToSession(ctx.session, MessageType::RoleRemoveResponse, roleResponse.payload);
+    ProxyToService(ctx, frame, Permission::ManageRoles, CallAuth,
+        MessageType::RoleRemoveRequest, MessageType::RoleRemoveResponse, StatusResponsePayload{254});
 }
 
 void HandleGetChannelOverrides(ClientContext& ctx, const Frame& frame) {
-    if (!HasPermission(ctx.session, Permission::ManageChannel)) {
-        ChannelOverridesResponsePayload forbidden; // пустой список — не отдаём даже намёк на настройку канала
-        SendToSession(ctx.session, MessageType::ChannelOverridesResponse, forbidden.Serialize());
-        return;
-    }
-    Frame roomResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::ChannelOverridesRequest, frame.payload,
-        MessageType::ChannelOverridesResponse, roomResponse, g_config.gateway.serviceCallTimeoutMs)) {
-        return;
-    }
-    SendToSession(ctx.session, MessageType::ChannelOverridesResponse, roomResponse.payload);
+    // Пустой список (не HasPermission-отказ явным статусом) — не отдаём даже намёк
+    // на настройку канала тому, кому не положено её видеть.
+    ProxyToService(ctx, frame, Permission::ManageChannel, CallRoom,
+        MessageType::ChannelOverridesRequest, MessageType::ChannelOverridesResponse, ChannelOverridesResponsePayload{});
 }
 
 void HandleSetChannelOverride(ClientContext& ctx, const Frame& frame) {
-    if (!HasPermission(ctx.session, Permission::ManageChannel)) {
-        StatusResponsePayload forbidden;
-        forbidden.status = 254;
-        SendToSession(ctx.session, MessageType::SetChannelOverrideResponse, forbidden.Serialize());
-        return;
-    }
-    Frame roomResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::SetChannelOverrideRequest, frame.payload,
-        MessageType::SetChannelOverrideResponse, roomResponse, g_config.gateway.serviceCallTimeoutMs)) {
-        return;
-    }
-    SendToSession(ctx.session, MessageType::SetChannelOverrideResponse, roomResponse.payload);
+    ProxyToService(ctx, frame, Permission::ManageChannel, CallRoom,
+        MessageType::SetChannelOverrideRequest, MessageType::SetChannelOverrideResponse, StatusResponsePayload{254});
 }
 
 void HandleDeleteChannelOverride(ClientContext& ctx, const Frame& frame) {
-    if (!HasPermission(ctx.session, Permission::ManageChannel)) {
-        StatusResponsePayload forbidden;
-        forbidden.status = 254;
-        SendToSession(ctx.session, MessageType::DeleteChannelOverrideResponse, forbidden.Serialize());
-        return;
-    }
-    Frame roomResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::DeleteChannelOverrideRequest, frame.payload,
-        MessageType::DeleteChannelOverrideResponse, roomResponse, g_config.gateway.serviceCallTimeoutMs)) {
-        return;
-    }
-    SendToSession(ctx.session, MessageType::DeleteChannelOverrideResponse, roomResponse.payload);
+    ProxyToService(ctx, frame, Permission::ManageChannel, CallRoom,
+        MessageType::DeleteChannelOverrideRequest, MessageType::DeleteChannelOverrideResponse, StatusResponsePayload{254});
 }
 
 void HandleChannelKick(ClientContext& ctx, const Frame& frame) {
-    if (!HasPermission(ctx.session, Permission::KickMembers)) {
-        StatusResponsePayload forbidden;
-        forbidden.status = 254;
-        SendToSession(ctx.session, MessageType::ChannelKickResponse, forbidden.Serialize());
-        return;
-    }
-    Frame roomResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::ChannelKickRequest, frame.payload,
-        MessageType::ChannelKickResponse, roomResponse, g_config.gateway.serviceCallTimeoutMs)) {
-        return;
-    }
-    SendToSession(ctx.session, MessageType::ChannelKickResponse, roomResponse.payload);
+    Frame roomResponse = ProxyToService(ctx, frame, Permission::KickMembers, CallRoom,
+        MessageType::ChannelKickRequest, MessageType::ChannelKickResponse, StatusResponsePayload{254});
+    if (roomResponse.messageType == 0) return;
 
-    auto result = StatusResponsePayload::Deserialize(roomResponse.payload);
-    if (result.status == 0) {
+    if (StatusResponsePayload::Deserialize(roomResponse.payload).status == 0) {
         auto request = RoomMembershipRequestPayload::Deserialize(frame.payload);
         ForceLeaveRoomIfOnline(request.userId, request.roomId);
     }
 }
 
 void HandleChannelUnban(ClientContext& ctx, const Frame& frame) {
-    if (!HasPermission(ctx.session, Permission::KickMembers)) {
-        StatusResponsePayload forbidden;
-        forbidden.status = 254;
-        SendToSession(ctx.session, MessageType::ChannelUnbanResponse, forbidden.Serialize());
-        return;
-    }
-    Frame roomResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::ChannelUnbanRequest, frame.payload,
-        MessageType::ChannelUnbanResponse, roomResponse, g_config.gateway.serviceCallTimeoutMs)) {
-        return;
-    }
-    SendToSession(ctx.session, MessageType::ChannelUnbanResponse, roomResponse.payload);
+    ProxyToService(ctx, frame, Permission::KickMembers, CallRoom,
+        MessageType::ChannelUnbanRequest, MessageType::ChannelUnbanResponse, StatusResponsePayload{254});
 }
 
 void HandleChannelMute(ClientContext& ctx, const Frame& frame) {
-    if (!HasPermission(ctx.session, Permission::ManageChannelModeration)) {
-        StatusResponsePayload forbidden;
-        forbidden.status = 254;
-        SendToSession(ctx.session, MessageType::ChannelMuteResponse, forbidden.Serialize());
-        return;
-    }
-    Frame roomResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::ChannelMuteRequest, frame.payload,
-        MessageType::ChannelMuteResponse, roomResponse, g_config.gateway.serviceCallTimeoutMs)) {
-        return;
-    }
-    SendToSession(ctx.session, MessageType::ChannelMuteResponse, roomResponse.payload);
+    ProxyToService(ctx, frame, Permission::ManageChannelModeration, CallRoom,
+        MessageType::ChannelMuteRequest, MessageType::ChannelMuteResponse, StatusResponsePayload{254});
 }
 
 void HandleChannelUnmute(ClientContext& ctx, const Frame& frame) {
-    if (!HasPermission(ctx.session, Permission::ManageChannelModeration)) {
-        StatusResponsePayload forbidden;
-        forbidden.status = 254;
-        SendToSession(ctx.session, MessageType::ChannelUnmuteResponse, forbidden.Serialize());
-        return;
-    }
-    Frame roomResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::ChannelUnmuteRequest, frame.payload,
-        MessageType::ChannelUnmuteResponse, roomResponse, g_config.gateway.serviceCallTimeoutMs)) {
-        return;
-    }
-    SendToSession(ctx.session, MessageType::ChannelUnmuteResponse, roomResponse.payload);
+    ProxyToService(ctx, frame, Permission::ManageChannelModeration, CallRoom,
+        MessageType::ChannelUnmuteRequest, MessageType::ChannelUnmuteResponse, StatusResponsePayload{254});
 }
 
 void HandleIpBanList(ClientContext& ctx, const Frame& frame) {
-    if (!HasPermission(ctx.session, Permission::ManageServerBans)) {
-        IpBanListResponsePayload forbidden; // пустой список — не выдаём даже намёк на содержимое
-        SendToSession(ctx.session, MessageType::IpBanListResponse, forbidden.Serialize());
-        return;
-    }
-    Frame authResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, MessageType::IpBanListRequest, {},
-        MessageType::IpBanListResponse, authResponse, g_config.gateway.serviceCallTimeoutMs)) {
-        return;
-    }
-    SendToSession(ctx.session, MessageType::IpBanListResponse, authResponse.payload);
+    ProxyToService(ctx, frame, Permission::ManageServerBans, CallAuth,
+        MessageType::IpBanListRequest, MessageType::IpBanListResponse, IpBanListResponsePayload{});
 }
 
 void HandleIpBan(ClientContext& ctx, const Frame& frame) {
-    if (!HasPermission(ctx.session, Permission::ManageServerBans)) {
-        StatusResponsePayload forbidden;
-        forbidden.status = 254;
-        SendToSession(ctx.session, MessageType::IpBanResponse, forbidden.Serialize());
-        return;
-    }
-    Frame authResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, MessageType::IpBanRequest, frame.payload,
-        MessageType::IpBanResponse, authResponse, g_config.gateway.serviceCallTimeoutMs)) {
-        return;
-    }
-    SendToSession(ctx.session, MessageType::IpBanResponse, authResponse.payload);
+    Frame authResponse = ProxyToService(ctx, frame, Permission::ManageServerBans, CallAuth,
+        MessageType::IpBanRequest, MessageType::IpBanResponse, StatusResponsePayload{254});
+    if (authResponse.messageType == 0) return;
 
     auto request = IpPayload::Deserialize(frame.payload);
     DisconnectSessionsForIp(request.ip);
 }
 
 void HandleIpUnban(ClientContext& ctx, const Frame& frame) {
-    if (!HasPermission(ctx.session, Permission::ManageServerBans)) {
-        StatusResponsePayload forbidden;
-        forbidden.status = 254;
-        SendToSession(ctx.session, MessageType::IpUnbanResponse, forbidden.Serialize());
-        return;
-    }
-    Frame authResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, MessageType::IpUnbanRequest, frame.payload,
-        MessageType::IpUnbanResponse, authResponse, g_config.gateway.serviceCallTimeoutMs)) {
-        return;
-    }
-    SendToSession(ctx.session, MessageType::IpUnbanResponse, authResponse.payload);
+    ProxyToService(ctx, frame, Permission::ManageServerBans, CallAuth,
+        MessageType::IpUnbanRequest, MessageType::IpUnbanResponse, StatusResponsePayload{254});
 }
 
 void ClientThread(socket_t clientSocket, std::string remoteIp) {
@@ -769,17 +647,11 @@ int main() {
     }
     std::cout << "[gateway] TLS certificate fingerprint (SHA-256): " << g_tls->FingerprintHex() << std::endl;
 
-    socket_t listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    sockaddr_in serverAddr{};
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = INADDR_ANY;
-    serverAddr.sin_port = htons(g_config.gateway.port);
-
-    if (bind(listenSocket, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr)) == -1) {
+    socket_t listenSocket = CreateListenSocket(g_config.gateway.port);
+    if (listenSocket == kInvalidSocket) {
         std::cerr << "[gateway] Bind failed" << std::endl;
         return 1;
     }
-    listen(listenSocket, SOMAXCONN);
 
     std::cout << "[gateway] Listening on port " << g_config.gateway.port << std::endl;
 

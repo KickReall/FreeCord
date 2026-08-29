@@ -234,14 +234,11 @@ int main() {
     }
     std::cout << "[room] Database ready at " << config.room.dbPath << std::endl;
 
-    socket_t listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    sockaddr_in serverAddr{};
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = INADDR_ANY;
-    serverAddr.sin_port = htons(config.room.port);
-
-    bind(listenSocket, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
-    listen(listenSocket, SOMAXCONN);
+    socket_t listenSocket = CreateListenSocket(config.room.port);
+    if (listenSocket == kInvalidSocket) {
+        std::cerr << "[room] Bind failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "[room] Listening on port " << config.room.port << std::endl;
 
