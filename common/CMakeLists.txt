@@ -1,6 +1,7 @@
 add_library(common STATIC
     src/TcpFramer.cpp
     src/PlatformSocket.cpp
+    src/Config.cpp
 )
 
 target_include_directories(common PUBLIC include)
@@ -12,3 +13,6 @@ endif()
 
 find_package(Threads REQUIRED)
 target_link_libraries(common PUBLIC Threads::Threads)
+
+find_package(nlohmann_json CONFIG REQUIRED)
+target_link_libraries(common PUBLIC nlohmann_json::nlohmann_json)

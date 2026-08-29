@@ -7,9 +7,8 @@
 #include "ProtocolTypes.h"
 #include "MessageMessages.h"
 #include "MessageRepository.h"
+#include "Config.h"
 
-constexpr int MESSAGE_SERVICE_PORT = 6003;
-constexpr const char* DB_PATH = "freecord_messages.db";
 constexpr size_t MAX_TEXT_LENGTH = 4000;
 
 int64_t CurrentUnixTime() {
@@ -81,25 +80,34 @@ void HandleClient(socket_t sock, MessageRepository& repo) {
 }
 
 int main() {
+    AppConfig config;
+    try {
+        config = LoadConfig();
+    }
+    catch (const std::exception& ex) {
+        std::cerr << "[message] Config error: " << ex.what() << std::endl;
+        return 1;
+    }
+
     SocketLibraryGuard socketLibrary;
     if (!socketLibrary.IsInitialized()) {
         std::cerr << "[message] Failed to initialize socket library" << std::endl;
         return 1;
     }
 
-    MessageRepository repo(DB_PATH);
-    std::cout << "[message] Database ready at " << DB_PATH << std::endl;
+    MessageRepository repo(config.message.dbPath);
+    std::cout << "[message] Database ready at " << config.message.dbPath << std::endl;
 
     socket_t listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     sockaddr_in serverAddr{};
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_addr.s_addr = INADDR_ANY;
-    serverAddr.sin_port = htons(MESSAGE_SERVICE_PORT);
+    serverAddr.sin_port = htons(config.message.port);
 
     bind(listenSocket, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
     listen(listenSocket, SOMAXCONN);
 
-    std::cout << "[message] Listening on port " << MESSAGE_SERVICE_PORT << std::endl;
+    std::cout << "[message] Listening on port " << config.message.port << std::endl;
 
     while (true) {
         socket_t clientSocket = accept(listenSocket, nullptr, nullptr);

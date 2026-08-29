@@ -1,0 +1,6 @@
+{
+    "auth": { "port": 6001, "dbPath": "freecord_auth.db" },
+    "room": { "port": 6002, "dbPath": "freecord_rooms.db" },
+    "message": { "port": 6003, "dbPath": "freecord_messages.db" },
+    "gateway": { "port": 6000, "serviceHost": "127.0.0.1" }
+}

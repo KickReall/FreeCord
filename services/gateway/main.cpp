@@ -11,17 +11,14 @@
 #include "ChatMessages.h"
 #include "ServiceClient.h"
 #include "SessionManager.h"
+#include "Config.h"
 
-constexpr int GATEWAY_PORT = 6000;
-constexpr const char* SERVICE_HOST = "127.0.0.1";
-constexpr int AUTH_SERVICE_PORT = 6001;
-constexpr int ROOM_SERVICE_PORT = 6002;
-constexpr int MESSAGE_SERVICE_PORT = 6003;
 constexpr int64_t SYSTEM_ROOM_ID = 1;
 constexpr int RECV_TIMEOUT_MS = 5000;        // как часто просыпаемся проверить тишину
 constexpr int CLIENT_IDLE_TIMEOUT_SEC = 45;  // после этого считаем клиента мёртвым
 
 SessionManager g_sessions;
+AppConfig g_config;
 
 struct ClientContext {
     socket_t socket = kInvalidSocket;
@@ -58,7 +55,7 @@ void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
     auto request = AuthRequestPayload::Deserialize(frame.payload);
 
     Frame authResponse;
-    bool ok = CallService(SERVICE_HOST, AUTH_SERVICE_PORT,
+    bool ok = CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port,
         isRegister ? MessageType::RegisterRequest : MessageType::AuthRequest,
         frame.payload,
         isRegister ? MessageType::RegisterResponse : MessageType::AuthResponse,
@@ -90,7 +87,7 @@ void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
             sysMessage.text = text;
 
             Frame saveResponse;
-            if (CallService(SERVICE_HOST, MESSAGE_SERVICE_PORT, MessageType::SendMessageRequest,
+            if (CallService(g_config.gateway.serviceHost.c_str(), g_config.message.port, MessageType::SendMessageRequest,
                 sysMessage.Serialize(), MessageType::SendMessageResponse, saveResponse)) {
 
                 auto saved = SendMessageResponsePayload::Deserialize(saveResponse.payload);
@@ -145,7 +142,7 @@ void HandleLeaveRoom(ClientContext& ctx, const Frame& frame) {
 
 void HandleRoomList(ClientContext& ctx, const Frame& frame) {
     Frame roomResponse;
-    if (!CallService(SERVICE_HOST, ROOM_SERVICE_PORT, MessageType::RoomListRequest, {},
+    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::RoomListRequest, {},
         MessageType::RoomListResponse, roomResponse)) {
         return;
     }
@@ -154,7 +151,7 @@ void HandleRoomList(ClientContext& ctx, const Frame& frame) {
 
 void HandleRoomCreate(ClientContext& ctx, const Frame& frame) {
     Frame roomResponse;
-    if (!CallService(SERVICE_HOST, ROOM_SERVICE_PORT, MessageType::RoomCreateRequest, frame.payload,
+    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::RoomCreateRequest, frame.payload,
         MessageType::RoomCreateResponse, roomResponse)) {
         return;
     }
@@ -180,7 +177,7 @@ void HandleRoomCreate(ClientContext& ctx, const Frame& frame) {
 
 void HandleHistory(ClientContext& ctx, const Frame& frame) {
     Frame historyResponse;
-    if (!CallService(SERVICE_HOST, MESSAGE_SERVICE_PORT, MessageType::HistoryRequest, frame.payload,
+    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.message.port, MessageType::HistoryRequest, frame.payload,
         MessageType::HistoryResponse, historyResponse)) {
         return;
     }
@@ -206,7 +203,7 @@ void HandleTextMessage(ClientContext& ctx, const Frame& frame) {
     saveRequest.text = clientMessage.text;
 
     Frame saveResponse;
-    if (!CallService(SERVICE_HOST, MESSAGE_SERVICE_PORT, MessageType::SendMessageRequest,
+    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.message.port, MessageType::SendMessageRequest,
         saveRequest.Serialize(), MessageType::SendMessageResponse, saveResponse)) {
         std::cout << "[gateway] message_service unavailable" << std::endl;
         return;
@@ -308,6 +305,14 @@ void ClientThread(socket_t clientSocket) {
 }
 
 int main() {
+    try {
+        g_config = LoadConfig();
+    }
+    catch (const std::exception& ex) {
+        std::cerr << "[gateway] Config error: " << ex.what() << std::endl;
+        return 1;
+    }
+
     SocketLibraryGuard socketLibrary;
     if (!socketLibrary.IsInitialized()) {
         std::cerr << "[gateway] Failed to initialize socket library" << std::endl;
@@ -318,7 +323,7 @@ int main() {
     sockaddr_in serverAddr{};
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_addr.s_addr = INADDR_ANY;
-    serverAddr.sin_port = htons(GATEWAY_PORT);
+    serverAddr.sin_port = htons(g_config.gateway.port);
 
     if (bind(listenSocket, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr)) == -1) {
         std::cerr << "[gateway] Bind failed" << std::endl;
@@ -326,7 +331,7 @@ int main() {
     }
     listen(listenSocket, SOMAXCONN);
 
-    std::cout << "[gateway] Listening on port " << GATEWAY_PORT << std::endl;
+    std::cout << "[gateway] Listening on port " << g_config.gateway.port << std::endl;
 
     while (true) {
         socket_t clientSocket = accept(listenSocket, nullptr, nullptr);

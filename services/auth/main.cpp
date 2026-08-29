@@ -6,9 +6,7 @@
 #include "AuthMessages.h"
 #include "UserRepository.h"
 #include "PasswordHasher.h"
-
-constexpr int AUTH_SERVICE_PORT = 6001;
-constexpr const char* DB_PATH = "freecord_auth.db";
+#include "Config.h"
 
 void HandleRegister(socket_t clientSocket, UserRepository& repo, const Frame& frame) {
     AuthRequestPayload request = AuthRequestPayload::Deserialize(frame.payload);
@@ -79,25 +77,34 @@ void HandleClient(socket_t clientSocket, UserRepository& repo) {
 }
 
 int main() {
+    AppConfig config;
+    try {
+        config = LoadConfig();
+    }
+    catch (const std::exception& ex) {
+        std::cerr << "[auth] Config error: " << ex.what() << std::endl;
+        return 1;
+    }
+
     SocketLibraryGuard socketLibrary;
     if (!socketLibrary.IsInitialized()) {
         std::cerr << "[auth] Failed to initialize socket library" << std::endl;
         return 1;
     }
 
-    UserRepository repo(DB_PATH);
-    std::cout << "[auth] Database ready at " << DB_PATH << std::endl;
+    UserRepository repo(config.auth.dbPath);
+    std::cout << "[auth] Database ready at " << config.auth.dbPath << std::endl;
 
     socket_t listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     sockaddr_in serverAddr{};
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_addr.s_addr = INADDR_ANY;
-    serverAddr.sin_port = htons(AUTH_SERVICE_PORT);
+    serverAddr.sin_port = htons(config.auth.port);
 
     bind(listenSocket, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
     listen(listenSocket, SOMAXCONN);
 
-    std::cout << "[auth] Listening on port " << AUTH_SERVICE_PORT << std::endl;
+    std::cout << "[auth] Listening on port " << config.auth.port << std::endl;
 
     while (true) {
         socket_t clientSocket = accept(listenSocket, nullptr, nullptr);

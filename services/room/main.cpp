@@ -6,10 +6,7 @@
 #include "ProtocolTypes.h"
 #include "RoomMessages.h"
 #include "RoomRepository.h"
-
-
-constexpr int ROOM_SERVICE_PORT = 6002;
-constexpr const char* DB_PATH = "freecord_rooms.db";
+#include "Config.h"
 
 void HandleCreate(socket_t sock, RoomRepository& repo, const Frame& frame) {
     auto request = RoomCreateRequestPayload::Deserialize(frame.payload);
@@ -104,25 +101,34 @@ void HandleClient(socket_t sock, RoomRepository& repo) {
 }
 
 int main() {
+    AppConfig config;
+    try {
+        config = LoadConfig();
+    }
+    catch (const std::exception& ex) {
+        std::cerr << "[room] Config error: " << ex.what() << std::endl;
+        return 1;
+    }
+
     SocketLibraryGuard socketLibrary;
     if (!socketLibrary.IsInitialized()) {
         std::cerr << "[room] Failed to initialize socket library" << std::endl;
         return 1;
     }
 
-    RoomRepository repo(DB_PATH);
-    std::cout << "[room] Database ready at " << DB_PATH << std::endl;
+    RoomRepository repo(config.room.dbPath);
+    std::cout << "[room] Database ready at " << config.room.dbPath << std::endl;
 
     socket_t listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     sockaddr_in serverAddr{};
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_addr.s_addr = INADDR_ANY;
-    serverAddr.sin_port = htons(ROOM_SERVICE_PORT);
+    serverAddr.sin_port = htons(config.room.port);
 
     bind(listenSocket, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
     listen(listenSocket, SOMAXCONN);
 
-    std::cout << "[room] Listening on port " << ROOM_SERVICE_PORT << std::endl;
+    std::cout << "[room] Listening on port " << config.room.port << std::endl;
 
     while (true) {
         socket_t clientSocket = accept(listenSocket, nullptr, nullptr);
