@@ -64,5 +64,9 @@ AppConfig LoadConfig(const std::string& path) {
     config.gateway.clientIdleTimeoutSec = RequireField<int>(gatewaySection, "gateway", "clientIdleTimeoutSec");
     config.gateway.serviceCallTimeoutMs = RequireField<int>(gatewaySection, "gateway", "serviceCallTimeoutMs");
 
+    const json& tlsSection = RequireSection(gatewaySection, "tls");
+    config.gateway.tls.certPath = RequireField<std::string>(tlsSection, "gateway.tls", "certPath");
+    config.gateway.tls.keyPath = RequireField<std::string>(tlsSection, "gateway.tls", "keyPath");
+
     return config;
 }

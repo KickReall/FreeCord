@@ -10,7 +10,8 @@ Self-hosted мессенджер (аналог Discord). Сервер — мик
 
 ```
 server/                    Всё серверное — C++, отдельно от client/
-  config.json              Порты, пути к БД, лимиты, таймауты — общий для всех сервисов
+  config.json              Порты, пути к БД, лимиты, таймауты, пути к TLS-сертификату — общий для всех сервисов
+  gateway.crt/.key         Самоподписанный сертификат гейтвея — генерируется сам при первом запуске, не в git
   db/                      SQL вне кода: миграции и запросы, по сервисам
     auth/migrations/001_initial.sql, queries/*.sql
     room/migrations/001_initial.sql, queries/*.sql
@@ -23,8 +24,11 @@ server/                    Всё серверное — C++, отдельно �
     include/
       ProtocolTypes.h      ControlHeader + enum MessageType
       Serialization.h      WriteString/ReadString, WriteScalar/ReadScalar
-      TcpFramer.h/.cpp     Кадрирование поверх TCP
-      ServiceClient.h      CallService — вызов внутреннего сервиса
+      TcpFramer.h/.cpp     Кадрирование поверх TCP, работает через ITransport
+      Transport.h/.cpp     ITransport + PlainTransport — абстракция канала передачи байт
+      TlsContext.h/.cpp    SSL_CTX гейтвея: загрузка/генерация сертификата, отпечаток
+      TlsTransport.h/.cpp  ITransport поверх TLS (серверный и клиентский handshake)
+      ServiceClient.h      CallService — вызов внутреннего сервиса (без TLS, только loopback)
       PlatformSocket.h/.cpp  Слой абстракции над Winsock2/BSD sockets
       Config.h/.cpp        LoadConfig — чтение config.json (nlohmann::json)
       SqlFile.h/.cpp       LoadSqlFile — чтение одного .sql-файла в строку
@@ -90,7 +94,7 @@ dotnet run
 
 Все четыре сервиса при старте читают `config.json` и папку `db/` (миграции + SQL-запросы) из своей рабочей директории. CMake копирует их из `server/` в `server/build-windows/`/`server/build-linux/` при каждой сборке (таргет `copy_config`) — именно туда, откуда по инструкции выше и запускаются `.exe`. Файла нет, он битый, или не хватает SQL-файла — сервис сразу падает с понятным сообщением об ошибке, никаких скрытых дефолтов в коде нет.
 
-**Что вынесено из кода, а что нет.** Порты, пути к БД, адрес хоста для внутренних вызовов, таймауты (`gateway.recvTimeoutMs`, `gateway.clientIdleTimeoutSec`, `gateway.serviceCallTimeoutMs`), лимит длины сообщения (`message.maxTextLength`) — в `server/config.json`. Все SQL-запросы и схемы таблиц — в `server/db/<сервис>/`. В коде остаётся только то, что связано с шифрованием (параметры PBKDF2 в `PasswordHasher.cpp`) и внутренние инварианты, завязанные на другие части системы: `SYSTEM_ROOM_ID` (совпадает с seed-данными в `server/db/room/migrations/001_initial.sql`) и `kMaxPayloadSize` в `TcpFramer.cpp` (должен совпадать с тем же лимитом в C#-клиенте — иначе сервер и клиент по-разному решат, что «слишком большой» кадр).
+**Что вынесено из кода, а что нет.** Порты, пути к БД, адрес хоста для внутренних вызовов, таймауты (`gateway.recvTimeoutMs`, `gateway.clientIdleTimeoutSec`, `gateway.serviceCallTimeoutMs`), лимит длины сообщения (`message.maxTextLength`), пути к TLS-сертификату и ключу (`gateway.tls.certPath`, `gateway.tls.keyPath`) — в `server/config.json`. Все SQL-запросы и схемы таблиц — в `server/db/<сервис>/`. В коде остаётся только то, что связано с шифрованием (параметры PBKDF2 в `PasswordHasher.cpp`) и внутренние инварианты, завязанные на другие части системы: `SYSTEM_ROOM_ID` (совпадает с seed-данными в `server/db/room/migrations/001_initial.sql`) и `kMaxPayloadSize` в `TcpFramer.cpp` (должен совпадать с тем же лимитом в C#-клиенте — иначе сервер и клиент по-разному решат, что «слишком большой» кадр).
 
 ---
 
@@ -105,6 +109,10 @@ dotnet run
 **Порядок функций в gateway/main.cpp.** `SendToSession` → `BroadcastToRoom` / `BroadcastToAll` → `Handle*` → `ClientThread` → `main`. C++ читает файл сверху вниз, вызов выше определения не компилируется.
 
 **Запись в чужой сокет только через `SendToSession`.** Fanout идёт из потока одного клиента в сокеты других. Каждая сессия имеет свой `sendMutex`; прямой `SendFrame` в чужой сокет приведёт к перемешиванию кадров.
+
+**Сертификат гейтвея не должен меняться между перезапусками без предупреждения.** Клиент закрепляет его отпечаток при первом подключении (TOFU, `client/FreeCord.Protocol/TrustedServerStore.cs`) и при следующих сверяет — расхождение обрывает соединение с явной ошибкой, а не молча переподключается. `TlsContext` поэтому генерирует `gateway.crt`/`gateway.key` только если файлов ещё нет, и переиспользует их при каждом следующем старте. Если сертификат всё же пришлось перевыпустить (например, файлы удалили руками), все клиенты, уже закрепившие старый отпечаток, откажутся подключаться — это ожидаемо, а не баг.
+
+**Не передавать OpenSSL свой `FILE*`.** На Windows со сборкой из vcpkg (динамический OpenSSL) вызов вроде `PEM_write_PrivateKey(fopen(...), ...)` падает с `OPENSSL_Uplink ... no OPENSSL_Applink` — `FILE*` не переживает переход через границу DLL со своим CRT. `TlsContext::GenerateSelfSignedCertificate` поэтому пишет PEM в память через `BIO_s_mem()` и сохраняет на диск сам через `std::ofstream`, а не отдаёт файловый дескриптор напрямую в OpenSSL.
 
 ---
 
@@ -124,12 +132,14 @@ dotnet run
 
 **Sessions через shared_ptr.** Поток-отправитель держит `SessionPtr` живым, даже если владелец сокета отключился в этот момент. `sessionId` генерируется случайно (`mt19937_64`), не счётчиком — чтобы чужую сессию нельзя было угадать перебором.
 
+**TLS обязателен клиент↔gateway, между внутренними сервисами его нет.** `Session::transport` — это `std::shared_ptr<ITransport>` (`TlsTransport` в проде), а вызовы `gateway → auth/room/message` через `ServiceClient::CallService` остаются на голом `PlainTransport`: это чисто loopback-трафик на `127.0.0.1`, шифровать его — отдельная задача (опциональным флагом), не обязательная для первой итерации. Самоподписанный сертификат означает, что доверенного CA нет: клиент проверяет не цепочку, а отпечаток (SHA-256), закреплённый по схеме TOFU (см. инвариант выше).
+
 ---
 
 ## Известные ограничения
 
 - **Разное покрытие тестами Windows/Linux.** Сетевой код переведён на слой абстракции `server/common/include/PlatformSocket.h` (`socket_t`, `CloseSocket`, `GetLastSocketError`, `IsTimeoutError`, `SetRecvTimeout`, `SocketLibraryGuard`). Собрано и проверено end-to-end на обеих платформах (Windows — нативно, Linux — в WSL2/Ubuntu-24.04, полный сценарий через `dotnet`-клиент на Windows против сервера в WSL). Не проверялось: реальный отдельный Linux-хост/сервер без WSL, поведение таймаутов/SIGPIPE под настоящей нагрузкой.
-- **Нет шифрования.** Пароли ходят открытым текстом. На localhost неважно, при выставлении в интернет — критично.
+- **Шифруется только клиент↔gateway.** Внутренние вызовы `gateway → auth/room/message` остаются на голом TCP — это loopback-трафик, не выставленный наружу, но если сервисы когда-нибудь разнесут по разным хостам, это станет критично.
 - **Нет ролевой модели.** Все комнаты доступны всем залогиненным.
 - **UI минимальный.** Нет списка участников, аватаров, группировки сообщений.
 - **Кодировка консоли.** Консольные клиенты на C++ шлют русский текст в CP866, а C# ждёт UTF-8 — кириллица между ними бьётся. В GUI-клиенте всё корректно. Лечится вызовом `SetConsoleOutputCP(CP_UTF8)` / `SetConsoleCP(CP_UTF8)`, но это не сделано, так как консольные клиенты отладочные.
@@ -142,7 +152,7 @@ dotnet run
 2. ~~**JSON-конфигурация**~~ — `server/config.json`, `server/common/include/Config.h` + `LoadConfig`.
 3. ~~**Система миграций БД**~~ — `PRAGMA user_version` + `MigrationRunner` (`server/common/include/MigrationRunner.h`), SQL-миграции и запросы вынесены в `server/db/<сервис>/`, схема меняется без потери данных и без удаления `.db` вручную.
 4. ~~**Серверная часть вынесена в отдельную папку**~~ — `server/` рядом с `client/`, чтобы структура репозитория не выглядела так, будто весь проект — это `client/`.
-5. **TLS** — обязательный для клиент↔gateway, опциональный флагом для межсервисных соединений. Планировался через OpenSSL с самоподписанным сертификатом и проверкой по отпечатку (pinning). Классы `TlsContext` и `TlsSocket` были спроектированы, но в репозиторий не попали.
+5. ~~**TLS клиент↔gateway**~~ — OpenSSL, самоподписанный сертификат (`server/common/include/TlsContext.h`), TOFU-pinning по отпечатку на клиенте (`client/FreeCord.Protocol/TrustedServerStore.cs`). TLS между внутренними сервисами опциональным флагом — не сделано, отложено (loopback-трафик, не приоритет).
 6. **Установщик для сервера** — systemd-юниты, автозапуск, скрипт развёртывания.
 7. **Ролевая модель** — приватные комнаты, права. Здесь пригодится `room_members`.
 8. **Голос и видео** — UDP, SFU-релей на сервере, Opus и H.264 через FFmpeg. Планировался `MediaPacketHeader` с `sessionId`, `senderId`, фрагментацией и `frameId`; сервер форвардит пакеты как есть, без декодирования.

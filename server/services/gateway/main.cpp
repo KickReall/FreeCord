@@ -1,9 +1,12 @@
 #include <iostream>
 #include <thread>
 #include <chrono>
+#include <memory>
 
 #include "PlatformSocket.h"
 #include "TcpFramer.h"
+#include "TlsContext.h"
+#include "TlsTransport.h"
 #include "ProtocolTypes.h"
 #include "AuthMessages.h"
 #include "RoomMessages.h"
@@ -19,16 +22,18 @@ constexpr int64_t SYSTEM_ROOM_ID = 1;
 
 SessionManager g_sessions;
 AppConfig g_config;
+std::unique_ptr<TlsContext> g_tls;
 
 struct ClientContext {
-    socket_t socket = kInvalidSocket;
+    socket_t socket = kInvalidSocket;         // нужен для SetRecvTimeout/CloseSocket — TLS работает поверх него
+    std::shared_ptr<ITransport> transport;    // TLS-соединение с клиентом; до успешного handshake равен nullptr
     SessionPtr session;   // nullptr, пока не залогинен
 };
 
 // Потокобезопасная отправка в сессию.
 bool SendToSession(const SessionPtr& session, MessageType type, const std::vector<uint8_t>& payload) {
     std::lock_guard<std::mutex> lock(session->sendMutex);
-    return SendFrame(session->socket, static_cast<uint16_t>(type), 0, payload) == FrameResult::Ok;
+    return SendFrame(*session->transport, static_cast<uint16_t>(type), 0, payload) == FrameResult::Ok;
 }
 
 // Разослать всем залогиненным клиентам, независимо от комнат.
@@ -70,7 +75,7 @@ void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
         response = AuthResponsePayload::Deserialize(authResponse.payload);
 
         if (response.status == 0 && !isRegister) {
-            ctx.session = g_sessions.AddSession(response.userId, request.username, ctx.socket);
+            ctx.session = g_sessions.AddSession(response.userId, request.username, ctx.transport);
             response.sessionId = ctx.session->sessionId;
             std::cout << "[gateway] '" << request.username << "' logged in (userId="
                 << response.userId << "), online=" << g_sessions.OnlineCount() << std::endl;
@@ -114,7 +119,7 @@ void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
         }
     }
 
-    SendFrame(ctx.socket,
+    SendFrame(*ctx.transport,
         static_cast<uint16_t>(isRegister ? MessageType::RegisterResponse : MessageType::AuthResponse),
         frame.sequence, response.Serialize());
 }
@@ -236,16 +241,24 @@ void HandleTextMessage(ClientContext& ctx, const Frame& frame) {
 void ClientThread(socket_t clientSocket) {
     ClientContext ctx;
     ctx.socket = clientSocket;
-    std::cout << "[gateway] Client connected" << std::endl;
 
-    // Ставим таймаут на чтение, чтобы recv() не висел вечно на мёртвом соединении
+    // Ставим таймаут на чтение до хендшейка — иначе зависший на TLS клиент
+    // навсегда займёт поток, так же как раньше это грозило голому recv().
     SetRecvTimeout(clientSocket, g_config.gateway.recvTimeoutMs);
+
+    ctx.transport = TlsTransport::AcceptServer(g_tls->Get(), clientSocket);
+    if (!ctx.transport) {
+        std::cout << "[gateway] TLS handshake failed, dropping connection" << std::endl;
+        CloseSocket(ctx.socket);
+        return;
+    }
+    std::cout << "[gateway] Client connected (TLS)" << std::endl;
 
     auto lastActivity = std::chrono::steady_clock::now();
 
     while (true) {
         Frame frame;
-        FrameResult result = ReceiveFrame(ctx.socket, frame);
+        FrameResult result = ReceiveFrame(*ctx.transport, frame);
 
         if (result == FrameResult::Timeout) {
             auto idleSeconds = std::chrono::duration_cast<std::chrono::seconds>(
@@ -303,6 +316,9 @@ void ClientThread(socket_t clientSocket) {
         g_sessions.RemoveSession(ctx.session->sessionId);
         std::cout << "[gateway] Session closed, online=" << g_sessions.OnlineCount() << std::endl;
     }
+    // Отпускаем TLS-объект (шлёт close_notify) до закрытия самого сокета, а не после.
+    ctx.session.reset();
+    ctx.transport.reset();
     CloseSocket(ctx.socket);
 }
 
@@ -320,6 +336,15 @@ int main() {
         std::cerr << "[gateway] Failed to initialize socket library" << std::endl;
         return 1;
     }
+
+    try {
+        g_tls = std::make_unique<TlsContext>(g_config.gateway.tls.certPath, g_config.gateway.tls.keyPath);
+    }
+    catch (const std::exception& ex) {
+        std::cerr << "[gateway] TLS error: " << ex.what() << std::endl;
+        return 1;
+    }
+    std::cout << "[gateway] TLS certificate fingerprint (SHA-256): " << g_tls->FingerprintHex() << std::endl;
 
     socket_t listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     sockaddr_in serverAddr{};

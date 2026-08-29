@@ -3,9 +3,11 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <memory>
 
 #include "PlatformSocket.h"
 #include "TcpFramer.h"
+#include "TlsTransport.h"
 #include "ProtocolTypes.h"
 #include "AuthMessages.h"
 #include "RoomMessages.h"
@@ -16,13 +18,14 @@ constexpr const char* GATEWAY_HOST = "127.0.0.1";
 constexpr int GATEWAY_PORT = 6000;
 
 socket_t g_socket = kInvalidSocket;
+std::shared_ptr<ITransport> g_transport;   // TLS-соединение с gateway
 std::mutex g_sendMutex;          // клиент тоже пишет из разных мест — защищаем отправку
 std::atomic<bool> g_running{ true };
 std::atomic<int64_t> g_userId{ 0 };
 
 bool Send(MessageType type, const std::vector<uint8_t>& payload) {
     std::lock_guard<std::mutex> lock(g_sendMutex);
-    return SendFrame(g_socket, static_cast<uint16_t>(type), 0, payload) == FrameResult::Ok;
+    return SendFrame(*g_transport, static_cast<uint16_t>(type), 0, payload) == FrameResult::Ok;
 }
 
 // --- Обработка входящих кадров (работает в отдельном потоке) ---
@@ -107,7 +110,7 @@ void HandleFrame(const Frame& frame) {
 void ReceiveThread() {
     while (g_running) {
         Frame frame;
-        FrameResult result = ReceiveFrame(g_socket, frame);
+        FrameResult result = ReceiveFrame(*g_transport, frame);
         if (result != FrameResult::Ok) {
             if (g_running) std::cout << "\n  [!] Connection lost" << std::endl;
             g_running = false;
@@ -172,7 +175,17 @@ int main() {
         std::cerr << "[client] Cannot connect to gateway on port " << GATEWAY_PORT << std::endl;
         return 1;
     }
-    std::cout << "[client] Connected to gateway" << std::endl;
+
+    std::string fingerprint;
+    g_transport = TlsTransport::ConnectClientNoVerify(g_socket, fingerprint);
+    if (!g_transport) {
+        std::cerr << "[client] TLS handshake with gateway failed" << std::endl;
+        CloseSocket(g_socket);
+        return 1;
+    }
+    std::cout << "[client] Connected to gateway (TLS)" << std::endl;
+    std::cout << "[client] Server certificate fingerprint (SHA-256): " << fingerprint << std::endl;
+    std::cout << "[client] NOTE: this debug client does not verify the fingerprint against anything (no pinning)." << std::endl;
 
     std::thread receiver(ReceiveThread);
 

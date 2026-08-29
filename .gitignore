@@ -2,6 +2,8 @@ build*/
 out/
 .vs/
 *.db
+*.crt
+*.key
 *.vcxproj
 *.vcxproj.filters
 *.vcxproj.user

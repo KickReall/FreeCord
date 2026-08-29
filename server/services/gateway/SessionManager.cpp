@@ -1,6 +1,6 @@
 #include "SessionManager.h"
 
-SessionPtr SessionManager::AddSession(int64_t userId, const std::string& username, socket_t socket) {
+SessionPtr SessionManager::AddSession(int64_t userId, const std::string& username, std::shared_ptr<ITransport> transport) {
     std::lock_guard<std::mutex> lock(m_mutex);
 
     auto existing = m_userToSession.find(userId);
@@ -17,7 +17,7 @@ SessionPtr SessionManager::AddSession(int64_t userId, const std::string& usernam
     session->sessionId = sessionId;
     session->userId = userId;
     session->username = username;
-    session->socket = socket;
+    session->transport = std::move(transport);
 
     m_sessions[session->sessionId] = session;
     m_userToSession[userId] = session->sessionId;

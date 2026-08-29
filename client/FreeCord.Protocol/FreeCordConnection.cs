@@ -1,4 +1,9 @@
+using System.Linq;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 
 namespace FreeCord.Protocol;
 
@@ -15,16 +20,20 @@ public sealed class FreeCordConnection : IAsyncDisposable
     private const uint MaxPayloadSize = 16 * 1024 * 1024;
 
     private TcpClient? _tcp;
-    private NetworkStream? _stream;
+    private Stream? _stream;   // после подключения — SslStream; TLS обязателен, plain-соединения не бывает
     private CancellationTokenSource? _cts;
     private Task? _receiveTask;
     private Task? _pingTask;
+    private readonly TrustedServerStore _trustedServers = new();
     private static readonly TimeSpan PingInterval = TimeSpan.FromSeconds(15);
 
     // Отправлять могут разные потоки — сериализуем запись, иначе кадры перемешаются
     private readonly SemaphoreSlim _sendLock = new(1, 1);
 
     public bool IsConnected => _tcp?.Connected ?? false;
+
+    /// <summary>Отпечаток сертификата сервера, закреплённый при первом подключении к этому адресу (TOFU).</summary>
+    public event Action<string>? ServerCertificatePinned;
 
     public event Action<AuthResponse>? AuthResponseReceived;
     public event Action<AuthResponse>? RegisterResponseReceived;
@@ -45,12 +54,59 @@ public sealed class FreeCordConnection : IAsyncDisposable
     {
         _tcp = new TcpClient();
         await _tcp.ConnectAsync(host, port, ct);
-        _stream = _tcp.GetStream();
+
+        // Сертификат самоподписанный (нет доверенного CA), поэтому обычная проверка цепочки
+        // не подходит — вместо неё TOFU: сверяем отпечаток с тем, что закрепили при первом
+        // подключении к этому host:port, и сами решаем, доверять ли текущему сертификату.
+        string? pinnedFingerprint = _trustedServers.GetPinnedFingerprint(host, port);
+        string? observedFingerprint = null;
+
+        var sslStream = new SslStream(_tcp.GetStream(), leaveInnerStreamOpen: false,
+            (_, certificate, _, _) =>
+            {
+                if (certificate is null) return false;
+                using var cert2 = new X509Certificate2(certificate);
+                observedFingerprint = FormatFingerprint(cert2.GetCertHash(HashAlgorithmName.SHA256));
+
+                // Ничего не закреплено — первое подключение, принимаем и закрепим ниже.
+                if (pinnedFingerprint is null) return true;
+                return string.Equals(pinnedFingerprint, observedFingerprint, StringComparison.OrdinalIgnoreCase);
+            });
+
+        try
+        {
+            await sslStream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+            {
+                TargetHost = host,
+                EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+            }, ct);
+        }
+        catch (AuthenticationException)
+        {
+            sslStream.Dispose();
+            if (pinnedFingerprint is not null && observedFingerprint is not null &&
+                !string.Equals(pinnedFingerprint, observedFingerprint, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ServerCertificateChangedException(host, port, pinnedFingerprint, observedFingerprint);
+            }
+            throw;
+        }
+
+        if (pinnedFingerprint is null && observedFingerprint is not null)
+        {
+            _trustedServers.Pin(host, port, observedFingerprint);
+            ServerCertificatePinned?.Invoke(observedFingerprint);
+        }
+
+        _stream = sslStream;
 
         _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         _receiveTask = Task.Run(() => ReceiveLoopAsync(_cts.Token));
         _pingTask = Task.Run(() => PingLoopAsync(_cts.Token));
     }
+
+    private static string FormatFingerprint(byte[] hash) =>
+        string.Join(":", hash.Select(b => b.ToString("X2")));
 
     public async Task SendAsync(MessageType type, byte[] payload, uint sequence = 0)
     {
@@ -209,6 +265,7 @@ public sealed class FreeCordConnection : IAsyncDisposable
             try { await _pingTask; } catch { }
         }
         _cts?.Dispose();
+        _stream?.Dispose();
         _tcp?.Dispose();
         _sendLock.Dispose();
     }

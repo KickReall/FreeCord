@@ -6,14 +6,14 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include "PlatformSocket.h"
+#include "Transport.h"
 #include <atomic>
 
 struct Session {
     uint64_t sessionId = 0;
     int64_t userId = 0;
     std::string username;
-    socket_t socket = kInvalidSocket;
+    std::shared_ptr<ITransport> transport;
     std::mutex sendMutex;
 
     // Комната, открытая пользователем сейчас. 0 = ни одной.
@@ -25,7 +25,7 @@ using SessionPtr = std::shared_ptr<Session>;
 
 class SessionManager {
 public:
-    SessionPtr AddSession(int64_t userId, const std::string& username, socket_t socket);
+    SessionPtr AddSession(int64_t userId, const std::string& username, std::shared_ptr<ITransport> transport);
     void RemoveSession(uint64_t sessionId);
     std::vector<SessionPtr> GetSessionsForUsers(const std::vector<int64_t>& userIds);
     // Все активные сессии — для рассылки глобальных событий
