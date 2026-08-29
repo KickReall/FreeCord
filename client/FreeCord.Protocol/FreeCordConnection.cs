@@ -32,6 +32,34 @@ public sealed class FreeCordConnection : IAsyncDisposable
 
     public bool IsConnected => _tcp?.Connected ?? false;
 
+    /// <summary>
+    /// Отпечаток, закреплённый (TOFU) для этого host:port на прошлых подключениях —
+    /// в отличие от <see cref="ServerFingerprint"/> не требует, чтобы соединение было
+    /// установлено прямо сейчас: читается из уже сохранённого на диске состояния.
+    /// </summary>
+    public string? GetPinnedFingerprint(string host, int port) => _trustedServers.GetPinnedFingerprint(host, port);
+
+    /// <summary>
+    /// Закрепляет отпечаток заранее, до первого подключения — используется при вводе
+    /// инвайт-ссылки с отпечатком: тогда самое первое подключение уже проверяется
+    /// по известному значению, а не слепо доверяет тому, что пришло от сервера.
+    /// Если для этого host:port уже что-то закреплено, не перезаписывает — TOFU
+    /// закрепляет один раз, а не переписывается по желанию звонящего.
+    /// </summary>
+    public void PinFingerprintIfUnknown(string host, int port, string fingerprint)
+    {
+        if (_trustedServers.GetPinnedFingerprint(host, port) is null)
+            _trustedServers.Pin(host, port, fingerprint);
+    }
+
+    /// <summary>
+    /// Отпечаток сертификата текущего соединения — не только что закреплённого, а вообще
+    /// любого успешного подключения. В отличие от host:port однозначно определяет сервер:
+    /// один и тот же gateway может быть доступен под разными именами/адресами (например,
+    /// 127.0.0.1 и 127.0.0.2 на loopback), а сертификат у него один.
+    /// </summary>
+    public string? ServerFingerprint { get; private set; }
+
     /// <summary>Отпечаток сертификата сервера, закреплённый при первом подключении к этому адресу (TOFU).</summary>
     public event Action<string>? ServerCertificatePinned;
 
@@ -62,6 +90,8 @@ public sealed class FreeCordConnection : IAsyncDisposable
     public event Action<IpBanListResponse>? IpBanListReceived;
     public event Action<StatusResponse>? IpBanResponseReceived;
     public event Action<StatusResponse>? IpUnbanResponseReceived;
+    public event Action<UserListResponse>? UserListReceived;
+    public event Action<StatusResponse>? BanUserSessionResponseReceived;
     public event Action<BroadcastTextMessage>? MessageReceived;
     public event Action<UserPresence>? UserJoined;
     public event Action<UserPresence>? UserLeft;
@@ -117,6 +147,7 @@ public sealed class FreeCordConnection : IAsyncDisposable
         }
 
         _stream = sslStream;
+        ServerFingerprint = observedFingerprint;
 
         _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         _receiveTask = Task.Run(() => ReceiveLoopAsync(_cts.Token));
@@ -294,6 +325,12 @@ public sealed class FreeCordConnection : IAsyncDisposable
             case MessageType.IpUnbanResponse:
                 IpUnbanResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
                 break;
+            case MessageType.UserListResponse:
+                UserListReceived?.Invoke(UserListResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.BanUserSessionResponse:
+                BanUserSessionResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
         }
     }
 
@@ -326,11 +363,11 @@ public sealed class FreeCordConnection : IAsyncDisposable
 
     public Task ListRolesAsync() => SendAsync(MessageType.RoleListRequest);
 
-    public Task CreateRoleAsync(string name, uint permissions) =>
-        SendAsync(MessageType.RoleCreateRequest, new RoleCreateRequest { Name = name, Permissions = permissions }.Serialize());
+    public Task CreateRoleAsync(string name, uint permissions, string displayName = "") =>
+        SendAsync(MessageType.RoleCreateRequest, new RoleCreateRequest { Name = name, Permissions = permissions, DisplayName = displayName }.Serialize());
 
-    public Task UpdateRoleAsync(long roleId, string name, uint permissions) =>
-        SendAsync(MessageType.RoleUpdateRequest, new RoleUpdateRequest { RoleId = roleId, Name = name, Permissions = permissions }.Serialize());
+    public Task UpdateRoleAsync(long roleId, string name, uint permissions, string displayName = "") =>
+        SendAsync(MessageType.RoleUpdateRequest, new RoleUpdateRequest { RoleId = roleId, Name = name, Permissions = permissions, DisplayName = displayName }.Serialize());
 
     public Task DeleteRoleAsync(long roleId) =>
         SendAsync(MessageType.RoleDeleteRequest, new RoleDeleteRequest { RoleId = roleId }.Serialize());
@@ -371,6 +408,11 @@ public sealed class FreeCordConnection : IAsyncDisposable
 
     public Task UnbanIpAsync(string ip) =>
         SendAsync(MessageType.IpUnbanRequest, new IpTargetRequest { Ip = ip }.Serialize());
+
+    public Task ListUsersAsync() => SendAsync(MessageType.UserListRequest);
+
+    public Task BanUserSessionAsync(long userId) =>
+        SendAsync(MessageType.BanUserSessionRequest, new BanUserSessionRequest { UserId = userId }.Serialize());
 
     public async ValueTask DisposeAsync()
     {

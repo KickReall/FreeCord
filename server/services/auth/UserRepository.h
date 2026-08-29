@@ -18,12 +18,21 @@ struct RoleRecord {
     std::string name;
     bool isSystem;
     uint32_t permissions;
+    std::string displayName;
 };
 
 enum class RoleOpResult { Ok, NotFound, SystemRole, NameTaken };
 
 struct UserRoleData {
     uint32_t permissions = 0;
+    std::vector<int64_t> roleIds;
+};
+
+// Один пользователь для панели участников — не путать с UserRecord (там ещё
+// и данные для логина, здесь только то, что нужно клиенту).
+struct UserSummary {
+    int64_t id;
+    std::string username;
     std::vector<int64_t> roleIds;
 };
 
@@ -37,10 +46,13 @@ public:
     std::optional<UserRecord> FindByUsername(const std::string& username);
 
     std::vector<RoleRecord> ListRoles();
-    // Возвращает id новой роли, либо -1, если имя занято.
-    int64_t CreateRole(const std::string& name, uint32_t permissions);
-    RoleOpResult UpdateRole(int64_t roleId, const std::string& name, uint32_t permissions);
+    // Возвращает id новой роли, либо -1, если имя занято. Пустой displayName —
+    // сервер сам подставит name (см. .cpp), чтобы не заставлять всех вызывающих
+    // (включая старый test_client) обязательно придумывать отображаемое имя.
+    int64_t CreateRole(const std::string& name, uint32_t permissions, const std::string& displayName);
+    RoleOpResult UpdateRole(int64_t roleId, const std::string& name, uint32_t permissions, const std::string& displayName);
     RoleOpResult DeleteRole(int64_t roleId);
+    std::vector<UserSummary> ListUsers();
     // false — роль уже была назначена / не была назначена
     bool AssignRole(int64_t userId, int64_t roleId);
     bool RemoveRole(int64_t userId, int64_t roleId);
@@ -62,6 +74,7 @@ private:
     std::string m_sqlCountUsers;
     std::string m_sqlAssignRole;
     std::string m_sqlListRoles;
+    std::string m_sqlListUsers;
     std::string m_sqlCreateRole;
     std::string m_sqlFindRoleById;
     std::string m_sqlUpdateRole;

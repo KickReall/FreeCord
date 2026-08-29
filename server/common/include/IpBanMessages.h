@@ -39,6 +39,25 @@ struct IpBanStatusPayload {
     }
 };
 
+// Действие "Заблокировать" из панели участников — забанить IP текущей активной
+// сессии пользователя. Composite-запрос, обрабатывается только на gateway (см.
+// BanUserSessionRequest в ProtocolTypes.h) — сюда сложен просто как соседняя IP-тема.
+struct BanUserSessionRequestPayload {
+    int64_t userId = 0;
+
+    std::vector<uint8_t> Serialize() const {
+        std::vector<uint8_t> buffer;
+        WriteScalar(buffer, userId);
+        return buffer;
+    }
+    static BanUserSessionRequestPayload Deserialize(const std::vector<uint8_t>& buffer) {
+        size_t offset = 0;
+        BanUserSessionRequestPayload r;
+        r.userId = ReadScalar<int64_t>(buffer, offset);
+        return r;
+    }
+};
+
 struct IpBanListResponsePayload {
     std::vector<std::string> ips;
 

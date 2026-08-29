@@ -61,15 +61,23 @@ void HandleLogin(socket_t clientSocket, UserRepository& repo, const Frame& frame
 void HandleRoleList(socket_t clientSocket, UserRepository& repo, const Frame& frame) {
     RoleListResponsePayload response;
     for (const auto& role : repo.ListRoles()) {
-        response.roles.push_back(RoleInfo{ role.id, role.name, role.isSystem, role.permissions });
+        response.roles.push_back(RoleInfo{ role.id, role.name, role.isSystem, role.permissions, role.displayName });
     }
     SendFrame(clientSocket, static_cast<uint16_t>(MessageType::RoleListResponse), frame.sequence, response.Serialize());
+}
+
+void HandleUserList(socket_t clientSocket, UserRepository& repo, const Frame& frame) {
+    UserListResponsePayload response;
+    for (const auto& user : repo.ListUsers()) {
+        response.users.push_back(UserInfo{ user.id, user.username, user.roleIds });
+    }
+    SendFrame(clientSocket, static_cast<uint16_t>(MessageType::UserListResponse), frame.sequence, response.Serialize());
 }
 
 void HandleRoleCreate(socket_t clientSocket, UserRepository& repo, const Frame& frame) {
     auto request = RoleCreateRequestPayload::Deserialize(frame.payload);
     RoleCreateResponsePayload response;
-    int64_t roleId = repo.CreateRole(request.name, request.permissions);
+    int64_t roleId = repo.CreateRole(request.name, request.permissions, request.displayName);
     if (roleId == -1) {
         response.status = 1; // имя занято
     }
@@ -83,7 +91,7 @@ void HandleRoleCreate(socket_t clientSocket, UserRepository& repo, const Frame& 
 void HandleRoleUpdate(socket_t clientSocket, UserRepository& repo, const Frame& frame) {
     auto request = RoleUpdateRequestPayload::Deserialize(frame.payload);
     StatusResponsePayload response;
-    switch (repo.UpdateRole(request.roleId, request.name, request.permissions)) {
+    switch (repo.UpdateRole(request.roleId, request.name, request.permissions, request.displayName)) {
     case RoleOpResult::Ok:         response.status = 0; break;
     case RoleOpResult::NotFound:   response.status = 1; break;
     case RoleOpResult::SystemRole: response.status = 2; break;
@@ -172,6 +180,7 @@ void HandleClient(socket_t clientSocket, UserRepository& repo) {
     case MessageType::RegisterRequest:          HandleRegister(clientSocket, repo, frame); break;
     case MessageType::AuthRequest:              HandleLogin(clientSocket, repo, frame); break;
     case MessageType::RoleListRequest:          HandleRoleList(clientSocket, repo, frame); break;
+    case MessageType::UserListRequest:          HandleUserList(clientSocket, repo, frame); break;
     case MessageType::RoleCreateRequest:        HandleRoleCreate(clientSocket, repo, frame); break;
     case MessageType::RoleUpdateRequest:        HandleRoleUpdate(clientSocket, repo, frame); break;
     case MessageType::RoleDeleteRequest:        HandleRoleDelete(clientSocket, repo, frame); break;

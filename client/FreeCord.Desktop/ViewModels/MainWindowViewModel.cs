@@ -1,181 +1,180 @@
 using System;
-using System.Linq;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Linq;
 using System.Threading.Tasks;
-using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using FreeCord.Protocol;
 
 namespace FreeCord.Desktop.ViewModels;
 
 public partial class MainWindowViewModel : ViewModelBase
 {
-    private readonly FreeCordConnection _connection = new();
+    private readonly ServerListStore _store = new();
 
-    [ObservableProperty] private string _host = "127.0.0.1";
-    [ObservableProperty] private int _port = 6000;
-    [ObservableProperty] private string _username = "";
-    [ObservableProperty] private string _password = "";
-    [ObservableProperty] private string _status = "Not connected";
+    public ObservableCollection<ServerSessionViewModel> Servers { get; } = new();
 
-    // IsLoggedIn управляет тем, какая панель видна: логин или чат
-    [ObservableProperty] private bool _isLoggedIn;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasActiveServer))]
+    private ServerSessionViewModel? _activeServer;
 
-    [ObservableProperty] private string _newRoomName = "";
-    [ObservableProperty] private string _messageText = "";
-    [ObservableProperty] private RoomInfo? _selectedRoom;
-
-    public ObservableCollection<RoomInfo> Rooms { get; } = new();
-    public ObservableCollection<MessageItem> Messages { get; } = new();
+    // Плейсхолдер в правой панели виден, пока не выбран/не добавлен ни один сервер
+    public bool HasActiveServer => ActiveServer is not null;
 
     public MainWindowViewModel()
     {
-        // ВАЖНО: события приходят из фонового потока приёма.
-        // Трогать ObservableCollection можно только из UI-потока, иначе падение.
-        _connection.AuthResponseReceived += r => OnUi(() =>
+        // Один и тот же host:port мог попасть в servers.json дважды из-за старого
+        // бага (не было проверки на дубликат при логине) — чистим при загрузке.
+        var loaded = _store.Load();
+        var deduped = new List<ServerEntry>();
+        foreach (var entry in loaded)
         {
-            if (r.IsSuccess)
-            {
-                IsLoggedIn = true;
-                Status = $"Logged in as {Username} (id={r.UserId})";
-                _ = _connection.ListRoomsAsync();
-            }
-            else Status = "Login failed: wrong username or password";
-        });
-
-        _connection.RegisterResponseReceived += r => OnUi(() =>
-            Status = r.IsSuccess ? "Registered, now log in" : "Registration failed: username taken");
-
-        _connection.UserRegistered += u => OnUi(() =>
-            Status = $"Новый пользователь: {u.Username}");
-
-        _connection.RoomCreated += r => OnUi(() =>
-        {
-            // Защита от дубликата: список мог обновиться другим путём
-            if (Rooms.Any(room => room.Id == r.RoomId)) return;
-            Rooms.Add(new RoomInfo(r.RoomId, r.Name));
-        });
-
-        _connection.RoomListReceived += r => OnUi(() =>
-        {
-            Rooms.Clear();
-            foreach (var room in r.Rooms) Rooms.Add(room);
-        });
-
-        _connection.RoomCreateResponseReceived += r => OnUi(() =>
-        {
-            Status = r.IsSuccess ? $"Room created (id={r.RoomId})" : "Room name already taken";
-            if (r.IsSuccess) _ = _connection.ListRoomsAsync();
-        });
-
-        _connection.JoinResponseReceived += r => OnUi(() =>
-            Status = r.Status switch
-            {
-                0 => "Joined room",
-                1 => "Room not found",
-                2 => "Already a member",
-                _ => $"Join error {r.Status}"
-            });
-
-        _connection.HistoryReceived += r => OnUi(() =>
-        {
-            Messages.Clear();
-            foreach (var m in r.Messages)
-                Messages.Add(new MessageItem(m.SenderName, m.Text, FormatTime(m.Timestamp)));
-        });
-
-        _connection.MessageReceived += m => OnUi(() =>
-        {
-            if (m.RoomId != SelectedRoom?.Id) return;
-            Messages.Add(new MessageItem(m.SenderName, m.Text, FormatTime(m.Timestamp)));
-        });
-
-        _connection.Disconnected += ex => OnUi(() =>
-        {
-            IsLoggedIn = false;
-            Status = $"Disconnected: {ex?.Message ?? "connection closed"}";
-        });
-    }
-
-    private static void OnUi(Action action) => Dispatcher.UIThread.Post(action);
-    // Сервер отдаёт unix-время в секундах, переводим в локальное время пользователя
-    private static string FormatTime(long unixSeconds) =>
-        DateTimeOffset.FromUnixTimeSeconds(unixSeconds).ToLocalTime().ToString("HH:mm");
-
-    private async Task EnsureConnectedAsync()
-    {
-        if (_connection.IsConnected) return;
-        Status = "Connecting...";
-        await _connection.ConnectAsync(Host, Port);
-        Status = "Connected";
-    }
-
-    [RelayCommand]
-    private async Task LoginAsync()
-    {
-        try
-        {
-            await EnsureConnectedAsync();
-            await _connection.LoginAsync(Username, Password);
+            if (deduped.Any(e => IsSameServer(e.Host, e.Port, entry.Host, entry.Port))) continue;
+            deduped.Add(entry);
         }
-        catch (Exception ex) { Status = $"Error: {ex.Message}"; }
+        if (deduped.Count != loaded.Count) _store.Save(deduped);
+
+        foreach (var entry in deduped)
+            Servers.Add(new ServerSessionViewModel(_store, entry.Host, entry.Port, entry.DisplayName, isPersisted: true, GuardDuplicate, GuardFingerprint));
+
+        ActiveServer = Servers.FirstOrDefault();
     }
 
+    // Клик по "+" в левой панели — новый, ещё не сохранённый сервер
     [RelayCommand]
-    private async Task RegisterAsync()
+    private void AddServer()
     {
-        try
+        var session = new ServerSessionViewModel(_store, "127.0.0.1", 6000, "New server", isPersisted: false, GuardDuplicate, GuardFingerprint);
+        Servers.Add(session);
+        ActiveServer = session;
+    }
+
+    // Вызывается сессией перед подключением к сети. Дешёвая проверка по строке
+    // host:port — если такой адрес уже занят другой вкладкой, не даём создать
+    // вторую независимую сессию, а переключаемся на уже существующую.
+    // Не ловит случай, когда один и тот же сервер доступен под разными адресами
+    // (например, 127.0.0.1 и 127.0.0.2 на loopback) — для этого см. GuardFingerprint.
+    private bool GuardDuplicate(ServerSessionViewModel candidate)
+    {
+        var other = Servers.FirstOrDefault(s =>
+            s != candidate && IsSameServer(s.Host, s.Port, candidate.Host, candidate.Port));
+        return ResolveCollision(candidate, other);
+    }
+
+    // Вызывается сессией сразу после успешного TLS-подключения, до логина/регистрации.
+    // Один физический сервер может отвечать под разными адресами — а сертификат
+    // (и, значит, отпечаток) у него всегда один, поэтому это надёжнее сравнения строк.
+    private bool GuardFingerprint(ServerSessionViewModel candidate)
+    {
+        var fingerprint = candidate.ServerFingerprint;
+        if (fingerprint is null) return true;
+
+        var other = Servers.FirstOrDefault(s => s != candidate && s.ServerFingerprint == fingerprint);
+        return ResolveCollision(candidate, other);
+    }
+
+    // Общая точка для обеих проверок. ВАЖНО: выживает не тот, кто оказался
+    // "существующим" в момент проверки (это зависело бы от того, кто раньше
+    // успел подключиться по сети — а после перезапуска приложения сохранённая
+    // на диске вкладка как раз ещё не подключена, и тогда свежедобавленная
+    // "+"-вкладка ошибочно побеждала бы настоящую), а тот, у кого выше приоритет:
+    // сохранённый на диске сервер всегда важнее свежедобавленного, при прочих
+    // равных — тот, кто раньше в списке (устойчиво к порядку логина/подключения).
+    private bool ResolveCollision(ServerSessionViewModel candidate, ServerSessionViewModel? other)
+    {
+        if (other is null) return true;
+
+        if (ShouldSurvive(candidate, other))
         {
-            await EnsureConnectedAsync();
-            await _connection.RegisterAsync(Username, Password);
-        }
-        catch (Exception ex) { Status = $"Error: {ex.Message}"; }
-    }
-
-    [RelayCommand]
-    private async Task CreateRoomAsync()
-    {
-        if (string.IsNullOrWhiteSpace(NewRoomName)) return;
-        await _connection.CreateRoomAsync(NewRoomName);
-        NewRoomName = "";
-    }
-
-    [RelayCommand]
-    private async Task JoinSelectedRoomAsync()
-    {
-        if (SelectedRoom is null) return;
-        await _connection.JoinRoomAsync(SelectedRoom.Id);
-    }
-
-    [RelayCommand]
-    private async Task SendMessageAsync()
-    {
-        if (SelectedRoom is null || string.IsNullOrWhiteSpace(MessageText)) return;
-        await _connection.SendTextAsync(SelectedRoom.Id, MessageText);
-        MessageText = "";
-    }
-
-    // Срабатывает при клике по комнате в списке
-    partial void OnSelectedRoomChanged(RoomInfo? value)
-    {
-        Messages.Clear();
-
-        if (value is null)
-        {
-            _ = _connection.LeaveRoomAsync(0);
-            return;
+            DiscardDuplicate(other, candidate);
+            return true;
         }
 
-        _ = SwitchToRoomAsync(value.Id);
+        DiscardDuplicate(candidate, other);
+        return false;
     }
 
-    private async Task SwitchToRoomAsync(long roomId)
+    private bool ShouldSurvive(ServerSessionViewModel a, ServerSessionViewModel b)
     {
-        await _connection.JoinRoomAsync(roomId);
-        await _connection.RequestHistoryAsync(roomId);
+        if (a.IsPersisted != b.IsPersisted) return a.IsPersisted;
+        return Servers.IndexOf(a) < Servers.IndexOf(b);
     }
+
+    private void DiscardDuplicate(ServerSessionViewModel discarded, ServerSessionViewModel survivor)
+    {
+        Servers.Remove(discarded);
+        ActiveServer = survivor;
+        survivor.Status = "Этот сервер уже добавлен";
+
+        // Если отбрасываемая вкладка тоже была сохранена (два разных адреса одного
+        // сервера, оба когда-то залогинены) — не оставлять от неё запись-призрак,
+        // которая на следующем запуске снова спровоцирует эту же коллизию.
+        if (discarded.IsPersisted)
+        {
+            var entries = _store.Load();
+            entries.RemoveAll(e => IsSameServer(e.Host, e.Port, discarded.Host, discarded.Port));
+            _store.Save(entries);
+        }
+
+        _ = discarded.DisconnectAsync();
+    }
+
+    private static bool IsSameServer(string hostA, int portA, string hostB, int portB) =>
+        portA == portB && string.Equals(hostA.Trim(), hostB.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    // Пункты контекстного меню в рейле — порядок в UI совпадает с порядком в servers.json
+    [RelayCommand]
+    private void MoveServerUp(ServerSessionViewModel server) => MoveServer(server, -1);
+
+    [RelayCommand]
+    private void MoveServerDown(ServerSessionViewModel server) => MoveServer(server, 1);
+
+    private void MoveServer(ServerSessionViewModel server, int delta)
+    {
+        int index = Servers.IndexOf(server);
+        int newIndex = index + delta;
+        if (index < 0 || newIndex < 0 || newIndex >= Servers.Count) return;
+
+        Servers.Move(index, newIndex);
+        PersistOrder();
+    }
+
+    private void PersistOrder()
+    {
+        var persisted = Servers.Where(s => s.IsPersisted)
+            .Select(s => new ServerEntry(s.Host, s.Port, s.DisplayName))
+            .ToList();
+        _store.Save(persisted);
+    }
+
+    [RelayCommand]
+    private async Task RemoveServerAsync(ServerSessionViewModel server)
+    {
+        if (!Servers.Remove(server)) return;
+
+        if (ActiveServer == server)
+            ActiveServer = Servers.FirstOrDefault();
+
+        if (server.IsPersisted)
+        {
+            var entries = _store.Load();
+            entries.RemoveAll(e => IsSameServer(e.Host, e.Port, server.Host, server.Port));
+            _store.Save(entries);
+        }
+
+        await server.DisconnectAsync();
+    }
+
+    // Диалог переименования — это забота View, а не ViewModel, поэтому здесь только
+    // просьба его показать; MainWindow.axaml.cs подписывается и сам открывает окно.
+    public event Action<ServerSessionViewModel>? RenameRequested;
+
+    [RelayCommand]
+    private void RenameServer(ServerSessionViewModel server) => RenameRequested?.Invoke(server);
+
+    // Буфер обмена — тоже забота View (нужен TopLevel), поэтому по той же схеме.
+    public event Action<ServerSessionViewModel>? CopyInviteLinkRequested;
+
+    [RelayCommand]
+    private void CopyInviteLink(ServerSessionViewModel server) => CopyInviteLinkRequested?.Invoke(server);
 }
-
-// Одно сообщение в ленте — с автором и временем
-public sealed record MessageItem(string Author, string Text, string Time);

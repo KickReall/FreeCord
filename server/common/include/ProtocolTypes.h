@@ -35,6 +35,12 @@ enum class MessageType : uint16_t {
     UserLeft = 0x0031,  // gateway -> клиент: кто-то вышел из комнаты
     ChannelKicked = 0x0032,  // gateway -> клиент: тебя кикнули из канала (roomId) — принудительный выход прямо сейчас
 
+    // Забанить IP текущей активной сессии пользователя (панель участников, действие
+    // "Заблокировать") — composite-обработчик, только gateway; не форвардится как есть
+    // в auth, т.к. клиентский payload (userId) не совпадает с внутренним (ip).
+    BanUserSessionRequest = 0x0050,  // userId
+    BanUserSessionResponse = 0x0051,  // status: 0 = ok, 1 = не в сети, 254 = нет прав
+
     Ping = 0x00F0,
     Pong = 0x00F1,
     Error = 0x00FF,  // code + сообщение об ошибке
@@ -100,6 +106,12 @@ enum class MessageType : uint16_t {
     GetUserPermissionsRequest = 0x400C,  // internal only, gateway -> auth: userId
     GetUserPermissionsResponse = 0x400D,  // internal only, auth -> gateway: permissions
     MyPermissions = 0x400E,  // gateway -> клиент, отправляется сразу после успешного логина
+
+    // Список всех пользователей с их ролями — для панели участников на клиенте.
+    // Видно любому залогиненному (как и RoleListRequest), то же значение клиент->gateway
+    // и gateway->auth (raw-forward).
+    UserListRequest = 0x400F,  // (пусто)
+    UserListResponse = 0x4010,
 
     // --- Бан по IP на уровне всего сервера: те же типы клиент->gateway и gateway->auth ---
     IpBanListRequest = 0x5000,  // (пусто) — список забаненных IP

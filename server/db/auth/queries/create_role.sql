@@ -1,1 +1,1 @@
-INSERT INTO roles (name, permissions) VALUES (?, ?);
+INSERT INTO roles (name, permissions, display_name) VALUES (?, ?, ?);

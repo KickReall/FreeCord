@@ -211,7 +211,9 @@ public sealed class RoomCreatedNotification
     }
 }
 
-public sealed record RoleInfo(long Id, string Name, bool IsSystem, uint Permissions);
+// DisplayName — заголовок группы в панели участников, отдельно от технического Name
+// (которое используется в RoleUpdateRequest и т.п.).
+public sealed record RoleInfo(long Id, string Name, bool IsSystem, uint Permissions, string DisplayName);
 
 public sealed class RoleListResponse
 {
@@ -224,7 +226,7 @@ public sealed class RoleListResponse
         var roles = new List<RoleInfo>((int)count);
         for (uint i = 0; i < count; i++)
         {
-            roles.Add(new RoleInfo(r.ReadInt64(), r.ReadString(), r.ReadByte() != 0, r.ReadUInt32()));
+            roles.Add(new RoleInfo(r.ReadInt64(), r.ReadString(), r.ReadByte() != 0, r.ReadUInt32(), r.ReadString()));
         }
         return new RoleListResponse { Roles = roles };
     }
@@ -234,12 +236,14 @@ public sealed class RoleCreateRequest
 {
     public string Name { get; set; } = "";
     public uint Permissions { get; set; }
+    public string DisplayName { get; set; } = "";  // пусто — сервер подставит Name
 
     public byte[] Serialize()
     {
         using var w = new PayloadWriter();
         w.WriteString(Name);
         w.WriteUInt32(Permissions);
+        w.WriteString(DisplayName);
         return w.ToArray();
     }
 }
@@ -262,6 +266,7 @@ public sealed class RoleUpdateRequest
     public long RoleId { get; set; }
     public string Name { get; set; } = "";
     public uint Permissions { get; set; }
+    public string DisplayName { get; set; } = "";  // пусто — сервер подставит Name
 
     public byte[] Serialize()
     {
@@ -269,6 +274,7 @@ public sealed class RoleUpdateRequest
         w.WriteInt64(RoleId);
         w.WriteString(Name);
         w.WriteUInt32(Permissions);
+        w.WriteString(DisplayName);
         return w.ToArray();
     }
 }
@@ -415,6 +421,44 @@ public sealed class IpBanListResponse
         var ips = new List<string>((int)count);
         for (uint i = 0; i < count; i++) ips.Add(r.ReadString());
         return new IpBanListResponse { Ips = ips };
+    }
+}
+
+/// <summary>Один пользователь для панели участников — группировка по ролям делается на клиенте.</summary>
+public sealed record UserInfo(long Id, string Username, IReadOnlyList<long> RoleIds);
+
+public sealed class UserListResponse
+{
+    public IReadOnlyList<UserInfo> Users { get; init; } = Array.Empty<UserInfo>();
+
+    public static UserListResponse Deserialize(byte[] data)
+    {
+        using var r = new PayloadReader(data);
+        uint count = r.ReadUInt32();
+        var users = new List<UserInfo>((int)count);
+        for (uint i = 0; i < count; i++)
+        {
+            long id = r.ReadInt64();
+            string username = r.ReadString();
+            uint roleCount = r.ReadUInt32();
+            var roleIds = new List<long>((int)roleCount);
+            for (uint j = 0; j < roleCount; j++) roleIds.Add(r.ReadInt64());
+            users.Add(new UserInfo(id, username, roleIds));
+        }
+        return new UserListResponse { Users = users };
+    }
+}
+
+/// <summary>Действие "Заблокировать" в панели участников — банит IP текущей сессии пользователя.</summary>
+public sealed class BanUserSessionRequest
+{
+    public long UserId { get; set; }
+
+    public byte[] Serialize()
+    {
+        using var w = new PayloadWriter();
+        w.WriteInt64(UserId);
+        return w.ToArray();
     }
 }
 

@@ -15,6 +15,7 @@ UserRepository::UserRepository(const std::string& dbPath)
     m_sqlCountUsers = LoadSqlFile("db/auth/queries/count_users.sql");
     m_sqlAssignRole = LoadSqlFile("db/auth/queries/assign_role.sql");
     m_sqlListRoles = LoadSqlFile("db/auth/queries/list_roles.sql");
+    m_sqlListUsers = LoadSqlFile("db/auth/queries/list_users.sql");
     m_sqlCreateRole = LoadSqlFile("db/auth/queries/create_role.sql");
     m_sqlFindRoleById = LoadSqlFile("db/auth/queries/find_role_by_id.sql");
     m_sqlUpdateRole = LoadSqlFile("db/auth/queries/update_role.sql");
@@ -83,17 +84,19 @@ std::vector<RoleRecord> UserRepository::ListRoles() {
         record.name = query.getColumn(1).getString();
         record.isSystem = query.getColumn(2).getInt() != 0;
         record.permissions = static_cast<uint32_t>(query.getColumn(3).getInt64());
+        record.displayName = query.getColumn(4).getString();
         result.push_back(record);
     }
     return result;
 }
 
-int64_t UserRepository::CreateRole(const std::string& name, uint32_t permissions) {
+int64_t UserRepository::CreateRole(const std::string& name, uint32_t permissions, const std::string& displayName) {
     std::lock_guard<std::mutex> lock(m_mutex);
     try {
         SQLite::Statement query(m_db, m_sqlCreateRole);
         query.bind(1, name);
         query.bind(2, static_cast<int64_t>(permissions));
+        query.bind(3, displayName.empty() ? name : displayName);
         query.exec();
         return m_db.getLastInsertRowid();
     }
@@ -103,7 +106,7 @@ int64_t UserRepository::CreateRole(const std::string& name, uint32_t permissions
     }
 }
 
-RoleOpResult UserRepository::UpdateRole(int64_t roleId, const std::string& name, uint32_t permissions) {
+RoleOpResult UserRepository::UpdateRole(int64_t roleId, const std::string& name, uint32_t permissions, const std::string& displayName) {
     std::lock_guard<std::mutex> lock(m_mutex);
     SQLite::Statement findQuery(m_db, m_sqlFindRoleById);
     findQuery.bind(1, roleId);
@@ -115,6 +118,8 @@ RoleOpResult UserRepository::UpdateRole(int64_t roleId, const std::string& name,
     if (isSystem) {
         // Системные роли нельзя переименовывать; admin вообще нельзя редактировать —
         // его права не хранятся маской и правки ни на что не повлияют (см. Permissions.h).
+        // displayName — чисто косметическое поле, но эту же блокировку применяем и к
+        // нему, чтобы не плодить отдельное исключение из общего правила "admin неизменен".
         if (roleId == kAdminRoleId || name != currentName) {
             return RoleOpResult::SystemRole;
         }
@@ -124,7 +129,8 @@ RoleOpResult UserRepository::UpdateRole(int64_t roleId, const std::string& name,
         SQLite::Statement updateQuery(m_db, m_sqlUpdateRole);
         updateQuery.bind(1, name);
         updateQuery.bind(2, static_cast<int64_t>(permissions));
-        updateQuery.bind(3, roleId);
+        updateQuery.bind(3, displayName.empty() ? name : displayName);
+        updateQuery.bind(4, roleId);
         updateQuery.exec();
         return RoleOpResult::Ok;
     }
@@ -182,6 +188,32 @@ UserRoleData UserRepository::GetUserRoleData(int64_t userId) {
         }
     }
     if (isAdmin) result.permissions = 0xFFFFFFFFu;
+    return result;
+}
+
+std::vector<UserSummary> UserRepository::ListUsers() {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    std::vector<UserSummary> result;
+
+    SQLite::Statement query(m_db, m_sqlListUsers);
+    while (query.executeStep()) {
+        UserSummary user;
+        user.id = query.getColumn(0).getInt64();
+        user.username = query.getColumn(1).getString();
+        result.push_back(std::move(user));
+    }
+
+    // Роли — отдельным проходом по тому же запросу, что и GetUserRoleData, но без
+    // подсчёта эффективных прав (панели участников нужны только сами roleIds).
+    SQLite::Statement roleQuery(m_db, m_sqlGetUserRolePermissions);
+    for (auto& user : result) {
+        roleQuery.reset();
+        roleQuery.bind(1, user.id);
+        while (roleQuery.executeStep()) {
+            user.roleIds.push_back(roleQuery.getColumn(0).getInt64());
+        }
+    }
+
     return result;
 }
 

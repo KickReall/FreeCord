@@ -429,6 +429,16 @@ void HandleRoleList(ClientContext& ctx, const Frame& frame) {
     SendToSession(ctx.session, MessageType::RoleListResponse, roleResponse.payload);
 }
 
+// Список пользователей виден любому залогиненному — как и список ролей, сам по
+// себе не секрет (нужен всем для панели участников), поэтому без ProxyToService.
+void HandleUserList(ClientContext& ctx, const Frame& frame) {
+    Frame userResponse;
+    if (!CallAuth(MessageType::UserListRequest, {}, MessageType::UserListResponse, userResponse)) {
+        return;
+    }
+    SendToSession(ctx.session, MessageType::UserListResponse, userResponse.payload);
+}
+
 void HandleRoleCreate(ClientContext& ctx, const Frame& frame) {
     ProxyToService(ctx, frame, Permission::ManageRoles, CallAuth,
         MessageType::RoleCreateRequest, MessageType::RoleCreateResponse, RoleCreateResponsePayload{254});
@@ -516,6 +526,53 @@ void HandleIpUnban(ClientContext& ctx, const Frame& frame) {
         MessageType::IpUnbanRequest, MessageType::IpUnbanResponse, StatusResponsePayload{254});
 }
 
+// Действие "Заблокировать" в панели участников — банит IP текущей активной сессии
+// пользователя. Composite, не через ProxyToService: клиентский payload (userId) не
+// совпадает по форме с тем, что реально уходит в auth (ip), поэтому собираем сами.
+void HandleBanUserSession(ClientContext& ctx, const Frame& frame) {
+    if (!HasPermission(ctx.session, Permission::ManageServerBans)) {
+        SendToSession(ctx.session, MessageType::BanUserSessionResponse, StatusResponsePayload{254}.Serialize());
+        return;
+    }
+
+    auto request = BanUserSessionRequestPayload::Deserialize(frame.payload);
+
+    StatusResponsePayload response;
+    if (request.userId == ctx.session->userId) {
+        // Не даём случайно отрезать себе доступ — клиент уже прячет эту кнопку
+        // для своей же строки, но что-то другое (test_client, будущий баг) может
+        // прислать такой запрос напрямую, так что проверяем и здесь тоже.
+        response.status = 2; // нельзя заблокировать самого себя
+        SendToSession(ctx.session, MessageType::BanUserSessionResponse, response.Serialize());
+        return;
+    }
+
+    auto sessions = g_sessions.GetSessionsForUsers({ request.userId });
+
+    if (sessions.empty()) {
+        response.status = 1; // пользователь сейчас не в сети — банить нечего (нет IP)
+        SendToSession(ctx.session, MessageType::BanUserSessionResponse, response.Serialize());
+        return;
+    }
+
+    std::string ip = sessions.front()->remoteIp;
+
+    IpPayload banRequest;
+    banRequest.ip = ip;
+    Frame authResponse;
+    if (!CallAuth(MessageType::IpBanRequest, banRequest.Serialize(), MessageType::IpBanResponse, authResponse)) {
+        response.status = 9; // auth_service недоступен
+        SendToSession(ctx.session, MessageType::BanUserSessionResponse, response.Serialize());
+        return;
+    }
+
+    DisconnectSessionsForIp(ip);
+
+    response.status = 0;
+    SendToSession(ctx.session, MessageType::BanUserSessionResponse, response.Serialize());
+    std::cout << "[gateway] Banned session IP " << ip << " (userId=" << request.userId << ")" << std::endl;
+}
+
 void ClientThread(socket_t clientSocket, std::string remoteIp) {
     ClientContext ctx;
     ctx.socket = clientSocket;
@@ -587,6 +644,7 @@ void ClientThread(socket_t clientSocket, std::string remoteIp) {
         case MessageType::HistoryRequest:    HandleHistory(ctx, frame);     break;
         case MessageType::TextMessage:       HandleTextMessage(ctx, frame); break;
         case MessageType::RoleListRequest:   HandleRoleList(ctx, frame);    break;
+        case MessageType::UserListRequest:   HandleUserList(ctx, frame);    break;
         case MessageType::RoleCreateRequest: HandleRoleCreate(ctx, frame);  break;
         case MessageType::RoleUpdateRequest: HandleRoleUpdate(ctx, frame);  break;
         case MessageType::RoleDeleteRequest: HandleRoleDelete(ctx, frame);  break;
@@ -602,6 +660,7 @@ void ClientThread(socket_t clientSocket, std::string remoteIp) {
         case MessageType::IpBanListRequest: HandleIpBanList(ctx, frame); break;
         case MessageType::IpBanRequest:     HandleIpBan(ctx, frame);     break;
         case MessageType::IpUnbanRequest:   HandleIpUnban(ctx, frame);   break;
+        case MessageType::BanUserSessionRequest: HandleBanUserSession(ctx, frame); break;
         case MessageType::Ping:
             // Отвечаем только залогиненным — до логина сессии ещё нет
             if (ctx.session) SendToSession(ctx.session, MessageType::Pong, frame.payload);

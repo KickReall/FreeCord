@@ -19,6 +19,10 @@ public enum MessageType : ushort
 	UserLeft = 0x0031,
 	ChannelKicked = 0x0032,
 
+	// Панель участников, действие "Заблокировать" — банит IP текущей сессии пользователя
+	BanUserSessionRequest = 0x0050,
+	BanUserSessionResponse = 0x0051,
+
 	Ping = 0x00F0,
 	Pong = 0x00F1,
 	Error = 0x00FF,
@@ -72,4 +76,8 @@ public enum MessageType : ushort
 	RoleRemoveRequest = 0x400A,
 	RoleRemoveResponse = 0x400B,
 	MyPermissions = 0x400E,  // gateway -> клиент, сразу после успешного логина
+
+	// Список пользователей с их ролями — для панели участников
+	UserListRequest = 0x400F,
+	UserListResponse = 0x4010,
 }

@@ -1,0 +1,15 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="FreeCord.Desktop.Views.TextPromptDialog"
+        Title="FreeCord" Width="320" SizeToContent="Height"
+        CanResize="False" WindowStartupLocation="CenterOwner"
+        Background="#2B2D31">
+    <StackPanel Margin="20" Spacing="12">
+        <TextBlock Name="LabelText" Foreground="#B5BAC1"/>
+        <TextBox Name="ValueBox" KeyDown="OnValueBoxKeyDown"/>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+            <Button Content="Отмена" Click="OnCancel"/>
+            <Button Content="OK" Click="OnOk"/>
+        </StackPanel>
+    </StackPanel>
+</Window>

@@ -9,3 +9,4 @@ out/
 *.vcxproj.user
 bin/
 obj/
+.claude/

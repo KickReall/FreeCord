@@ -1,0 +1,59 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text.Json;
+
+namespace FreeCord.Desktop;
+
+/// <summary>
+/// Локальные никнеймы участников — видны только этому клиенту, никогда не уходят
+/// на сервер и не влияют на других пользователей. Ключ — host:port:userId, так как
+/// один и тот же userId на разных серверах может быть совершенно разными людьми.
+/// </summary>
+public sealed class LocalNicknameStore
+{
+    private readonly string _path;
+    private readonly Dictionary<string, string> _nicknames;
+
+    public LocalNicknameStore(string? path = null)
+    {
+        _path = path ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "FreeCord", "nicknames.json");
+        _nicknames = Load();
+    }
+
+    public string? Get(string host, int port, long userId) =>
+        _nicknames.TryGetValue(Key(host, port, userId), out var nickname) ? nickname : null;
+
+    public void Set(string host, int port, long userId, string? nickname)
+    {
+        var key = Key(host, port, userId);
+        if (string.IsNullOrEmpty(nickname)) _nicknames.Remove(key);
+        else _nicknames[key] = nickname;
+        Save();
+    }
+
+    private static string Key(string host, int port, long userId) => $"{host}:{port}:{userId}";
+
+    private Dictionary<string, string> Load()
+    {
+        try
+        {
+            if (!File.Exists(_path)) return new();
+            var json = File.ReadAllText(_path);
+            return JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? new();
+        }
+        catch
+        {
+            return new();
+        }
+    }
+
+    private void Save()
+    {
+        var dir = Path.GetDirectoryName(_path);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+        File.WriteAllText(_path, JsonSerializer.Serialize(_nicknames));
+    }
+}
