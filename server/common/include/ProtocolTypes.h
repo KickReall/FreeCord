@@ -53,6 +53,12 @@ enum class MessageType : uint16_t {
     RoomListResponse = 0x2007,  // room -> gateway: список комнат
     RoomMembersRequest = 0x2008,  // gateway -> room: roomId
     RoomMembersResponse = 0x2009,  // room -> gateway: список userId участников
+    ChannelOverridesRequest = 0x200A,  // gateway -> room: roomId
+    ChannelOverridesResponse = 0x200B,  // room -> gateway: список оверрайдов (roleId, allow, deny)
+    SetChannelOverrideRequest = 0x200C,  // gateway -> room: roomId, roleId, allow, deny
+    SetChannelOverrideResponse = 0x200D,  // room -> gateway: status
+    DeleteChannelOverrideRequest = 0x200E,  // gateway -> room: roomId, roleId — сброс к базовым правам роли
+    DeleteChannelOverrideResponse = 0x200F,  // room -> gateway: status
 
     // --- Gateway <-> Message (internal) ---
     SendMessageRequest = 0x3000,  // gateway -> message: roomId, senderId, text

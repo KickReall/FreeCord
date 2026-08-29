@@ -10,6 +10,12 @@ struct RoomRecord {
     std::string name;
 };
 
+struct ChannelOverride {
+    int64_t roleId;
+    uint32_t allow;
+    uint32_t deny;
+};
+
 class RoomRepository {
 public:
     explicit RoomRepository(const std::string& dbPath);
@@ -27,6 +33,10 @@ public:
     std::vector<RoomRecord> ListRooms();
     std::vector<int64_t> ListMembers(int64_t roomId);
 
+    std::vector<ChannelOverride> GetChannelOverrides(int64_t roomId);
+    void SetChannelOverride(int64_t roomId, int64_t roleId, uint32_t allow, uint32_t deny);
+    void DeleteChannelOverride(int64_t roomId, int64_t roleId);
+
 private:
     SQLite::Database m_db;
     std::mutex m_mutex;
@@ -37,4 +47,7 @@ private:
     std::string m_sqlRemoveMember;
     std::string m_sqlListRooms;
     std::string m_sqlListMembers;
+    std::string m_sqlGetChannelOverrides;
+    std::string m_sqlSetChannelOverride;
+    std::string m_sqlDeleteChannelOverride;
 };

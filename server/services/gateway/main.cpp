@@ -2,6 +2,7 @@
 #include <thread>
 #include <chrono>
 #include <memory>
+#include <algorithm>
 
 #include "PlatformSocket.h"
 #include "TcpFramer.h"
@@ -62,6 +63,38 @@ int BroadcastToRoom(int64_t roomId, MessageType type, const std::vector<uint8_t>
     return delivered;
 }
 
+// Эффективные права пользователя в конкретной комнате: базовые права сессии плюс
+// оверрайды по её ролям (allow/deny из channel_role_overrides). Admin (все биты
+// в session->permissions) оверрайды не затрагивают — иначе оверрайд смог бы
+// отобрать права у суперпользователя, что ломает саму идею admin'а.
+uint32_t EffectivePermissionsInRoom(const SessionPtr& session, int64_t roomId) {
+    uint32_t base = session->permissions.load();
+    if (base == 0xFFFFFFFFu) return base;
+
+    Frame overridesResponse;
+    ChannelOverridesRequestPayload request;
+    request.roomId = roomId;
+    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::ChannelOverridesRequest,
+        request.Serialize(), MessageType::ChannelOverridesResponse, overridesResponse,
+        g_config.gateway.serviceCallTimeoutMs)) {
+        return base; // room_service недоступен — не блокируем на ровном месте, работаем с базовыми правами
+    }
+
+    auto overrides = ChannelOverridesResponsePayload::Deserialize(overridesResponse.payload);
+
+    uint32_t allow = 0, deny = 0;
+    for (const auto& o : overrides.overrides) {
+        bool hasRole = std::find(session->roleIds.begin(), session->roleIds.end(), o.roleId) != session->roleIds.end();
+        if (!hasRole) continue;
+        allow |= o.allow;
+        deny |= o.deny;
+    }
+
+    // Явный allow хоть у одной роли побеждает deny у другой — ролевой иерархии
+    // (как у Discord) в проекте нет, поэтому используем самое простое правило.
+    return (base & ~deny) | allow;
+}
+
 void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
     auto request = AuthRequestPayload::Deserialize(frame.payload);
 
@@ -96,6 +129,7 @@ void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
                 g_config.gateway.serviceCallTimeoutMs)) {
                 auto perms = MyPermissionsPayload::Deserialize(permResponse.payload);
                 ctx.session->permissions.store(perms.permissions);
+                ctx.session->roleIds = perms.roleIds;
                 SendToSession(ctx.session, MessageType::MyPermissions, perms.Serialize());
             }
         }
@@ -147,6 +181,15 @@ void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
 void HandleSelectRoom(ClientContext& ctx, const Frame& frame) {
     auto request = RoomMembershipRequestPayload::Deserialize(frame.payload);
 
+    if ((EffectivePermissionsInRoom(ctx.session, request.roomId) & static_cast<uint32_t>(Permission::OpenChannel)) == 0) {
+        std::cout << "[gateway] userId=" << ctx.session->userId
+            << " lacks OpenChannel in room " << request.roomId << std::endl;
+        StatusResponsePayload forbidden;
+        forbidden.status = 254;
+        SendToSession(ctx.session, MessageType::JoinRoomResponse, forbidden.Serialize());
+        return;
+    }
+
     int64_t previous = ctx.session->currentRoomId.exchange(request.roomId);
 
     StatusResponsePayload response;
@@ -171,10 +214,26 @@ void HandleRoomList(ClientContext& ctx, const Frame& frame) {
         MessageType::RoomListResponse, roomResponse, g_config.gateway.serviceCallTimeoutMs)) {
         return;
     }
-    SendToSession(ctx.session, MessageType::RoomListResponse, roomResponse.payload);
+
+    // Комнаты без ViewChannel у пользователя в списке не показываем.
+    auto allRooms = RoomListResponsePayload::Deserialize(roomResponse.payload);
+    RoomListResponsePayload visibleRooms;
+    for (const auto& room : allRooms.rooms) {
+        if (EffectivePermissionsInRoom(ctx.session, room.id) & static_cast<uint32_t>(Permission::ViewChannel)) {
+            visibleRooms.rooms.push_back(room);
+        }
+    }
+    SendToSession(ctx.session, MessageType::RoomListResponse, visibleRooms.Serialize());
 }
 
 void HandleRoomCreate(ClientContext& ctx, const Frame& frame) {
+    if (!HasPermission(ctx.session, Permission::ManageChannel)) {
+        RoomCreateResponsePayload forbidden;
+        forbidden.status = 254;
+        SendToSession(ctx.session, MessageType::RoomCreateResponse, forbidden.Serialize());
+        return;
+    }
+
     Frame roomResponse;
     if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::RoomCreateRequest, frame.payload,
         MessageType::RoomCreateResponse, roomResponse, g_config.gateway.serviceCallTimeoutMs)) {
@@ -217,6 +276,12 @@ void HandleTextMessage(ClientContext& ctx, const Frame& frame) {
         std::cout << "[gateway] userId=" << ctx.session->userId
             << " tried to post to room " << clientMessage.roomId
             << " while in " << ctx.session->currentRoomId.load() << std::endl;
+        return;
+    }
+
+    if ((EffectivePermissionsInRoom(ctx.session, clientMessage.roomId) & static_cast<uint32_t>(Permission::SendMessages)) == 0) {
+        std::cout << "[gateway] userId=" << ctx.session->userId
+            << " lacks SendMessages in room " << clientMessage.roomId << std::endl;
         return;
     }
 
@@ -342,6 +407,50 @@ void HandleRoleRemove(ClientContext& ctx, const Frame& frame) {
     SendToSession(ctx.session, MessageType::RoleRemoveResponse, roleResponse.payload);
 }
 
+void HandleGetChannelOverrides(ClientContext& ctx, const Frame& frame) {
+    if (!HasPermission(ctx.session, Permission::ManageChannel)) {
+        ChannelOverridesResponsePayload forbidden; // пустой список — не отдаём даже намёк на настройку канала
+        SendToSession(ctx.session, MessageType::ChannelOverridesResponse, forbidden.Serialize());
+        return;
+    }
+    Frame roomResponse;
+    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::ChannelOverridesRequest, frame.payload,
+        MessageType::ChannelOverridesResponse, roomResponse, g_config.gateway.serviceCallTimeoutMs)) {
+        return;
+    }
+    SendToSession(ctx.session, MessageType::ChannelOverridesResponse, roomResponse.payload);
+}
+
+void HandleSetChannelOverride(ClientContext& ctx, const Frame& frame) {
+    if (!HasPermission(ctx.session, Permission::ManageChannel)) {
+        StatusResponsePayload forbidden;
+        forbidden.status = 254;
+        SendToSession(ctx.session, MessageType::SetChannelOverrideResponse, forbidden.Serialize());
+        return;
+    }
+    Frame roomResponse;
+    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::SetChannelOverrideRequest, frame.payload,
+        MessageType::SetChannelOverrideResponse, roomResponse, g_config.gateway.serviceCallTimeoutMs)) {
+        return;
+    }
+    SendToSession(ctx.session, MessageType::SetChannelOverrideResponse, roomResponse.payload);
+}
+
+void HandleDeleteChannelOverride(ClientContext& ctx, const Frame& frame) {
+    if (!HasPermission(ctx.session, Permission::ManageChannel)) {
+        StatusResponsePayload forbidden;
+        forbidden.status = 254;
+        SendToSession(ctx.session, MessageType::DeleteChannelOverrideResponse, forbidden.Serialize());
+        return;
+    }
+    Frame roomResponse;
+    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::DeleteChannelOverrideRequest, frame.payload,
+        MessageType::DeleteChannelOverrideResponse, roomResponse, g_config.gateway.serviceCallTimeoutMs)) {
+        return;
+    }
+    SendToSession(ctx.session, MessageType::DeleteChannelOverrideResponse, roomResponse.payload);
+}
+
 void ClientThread(socket_t clientSocket) {
     ClientContext ctx;
     ctx.socket = clientSocket;
@@ -411,6 +520,9 @@ void ClientThread(socket_t clientSocket) {
         case MessageType::RoleDeleteRequest: HandleRoleDelete(ctx, frame);  break;
         case MessageType::RoleAssignRequest: HandleRoleAssign(ctx, frame);  break;
         case MessageType::RoleRemoveRequest: HandleRoleRemove(ctx, frame);  break;
+        case MessageType::ChannelOverridesRequest:      HandleGetChannelOverrides(ctx, frame);    break;
+        case MessageType::SetChannelOverrideRequest:    HandleSetChannelOverride(ctx, frame);     break;
+        case MessageType::DeleteChannelOverrideRequest: HandleDeleteChannelOverride(ctx, frame);  break;
         case MessageType::Ping:
             // Отвечаем только залогиненным — до логина сессии ещё нет
             if (ctx.session) SendToSession(ctx.session, MessageType::Pong, frame.payload);

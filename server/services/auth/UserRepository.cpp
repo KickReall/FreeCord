@@ -21,6 +21,7 @@ UserRepository::UserRepository(const std::string& dbPath)
     m_sqlDeleteRole = LoadSqlFile("db/auth/queries/delete_role.sql");
     m_sqlRemoveRole = LoadSqlFile("db/auth/queries/remove_role.sql");
     m_sqlGetUserRolePermissions = LoadSqlFile("db/auth/queries/get_user_role_permissions.sql");
+    m_sqlListUserRoleIds = LoadSqlFile("db/auth/queries/list_user_role_ids.sql");
 }
 
 int64_t UserRepository::CreateUser(const std::string& username, const std::string& passwordHash, const std::string& passwordSalt) {
@@ -163,4 +164,14 @@ uint32_t UserRepository::GetUserPermissions(int64_t userId) {
         combined |= static_cast<uint32_t>(query.getColumn(1).getInt64());
     }
     return combined;
+}
+
+std::vector<int64_t> UserRepository::GetUserRoleIds(int64_t userId) {
+    std::vector<int64_t> result;
+    SQLite::Statement query(m_db, m_sqlListUserRoleIds);
+    query.bind(1, userId);
+    while (query.executeStep()) {
+        result.push_back(query.getColumn(0).getInt64());
+    }
+    return result;
 }

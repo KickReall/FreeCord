@@ -120,6 +120,7 @@ void HandleGetUserPermissions(socket_t clientSocket, UserRepository& repo, const
     auto request = GetUserPermissionsRequestPayload::Deserialize(frame.payload);
     MyPermissionsPayload response;
     response.permissions = repo.GetUserPermissions(request.userId);
+    response.roleIds = repo.GetUserRoleIds(request.userId);
     SendFrame(clientSocket, static_cast<uint16_t>(MessageType::GetUserPermissionsResponse), frame.sequence, response.Serialize());
 }
 

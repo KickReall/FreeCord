@@ -29,6 +29,12 @@ public enum MessageType : ushort
 	RoomLeaveResponse = 0x2005,
 	RoomListRequest = 0x2006,
 	RoomListResponse = 0x2007,
+	ChannelOverridesRequest = 0x200A,
+	ChannelOverridesResponse = 0x200B,
+	SetChannelOverrideRequest = 0x200C,
+	SetChannelOverrideResponse = 0x200D,
+	DeleteChannelOverrideRequest = 0x200E,
+	DeleteChannelOverrideResponse = 0x200F,
 
 	HistoryRequest = 0x3002,
 	HistoryResponse = 0x3003,

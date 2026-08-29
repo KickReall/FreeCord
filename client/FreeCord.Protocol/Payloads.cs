@@ -304,11 +304,78 @@ public sealed class RoleMembershipRequest
 public sealed class MyPermissions
 {
     public uint Permissions { get; init; }
+    public IReadOnlyList<long> RoleIds { get; init; } = Array.Empty<long>();
 
     public static MyPermissions Deserialize(byte[] data)
     {
         using var r = new PayloadReader(data);
-        return new MyPermissions { Permissions = r.ReadUInt32() };
+        uint permissions = r.ReadUInt32();
+        uint count = r.ReadUInt32();
+        var roleIds = new List<long>((int)count);
+        for (uint i = 0; i < count; i++) roleIds.Add(r.ReadInt64());
+        return new MyPermissions { Permissions = permissions, RoleIds = roleIds };
+    }
+}
+
+public sealed record ChannelOverrideInfo(long RoleId, uint Allow, uint Deny);
+
+public sealed class ChannelOverridesRequest
+{
+    public long RoomId { get; set; }
+
+    public byte[] Serialize()
+    {
+        using var w = new PayloadWriter();
+        w.WriteInt64(RoomId);
+        return w.ToArray();
+    }
+}
+
+public sealed class ChannelOverridesResponse
+{
+    public IReadOnlyList<ChannelOverrideInfo> Overrides { get; init; } = Array.Empty<ChannelOverrideInfo>();
+
+    public static ChannelOverridesResponse Deserialize(byte[] data)
+    {
+        using var r = new PayloadReader(data);
+        uint count = r.ReadUInt32();
+        var overrides = new List<ChannelOverrideInfo>((int)count);
+        for (uint i = 0; i < count; i++)
+            overrides.Add(new ChannelOverrideInfo(r.ReadInt64(), r.ReadUInt32(), r.ReadUInt32()));
+        return new ChannelOverridesResponse { Overrides = overrides };
+    }
+}
+
+public sealed class SetChannelOverrideRequest
+{
+    public long RoomId { get; set; }
+    public long RoleId { get; set; }
+    public uint Allow { get; set; }
+    public uint Deny { get; set; }
+
+    public byte[] Serialize()
+    {
+        using var w = new PayloadWriter();
+        w.WriteInt64(RoomId);
+        w.WriteInt64(RoleId);
+        w.WriteUInt32(Allow);
+        w.WriteUInt32(Deny);
+        return w.ToArray();
+    }
+}
+
+/// <summary>Сброс оверрайда роли на канале обратно к базовым правам роли.</summary>
+public sealed class DeleteChannelOverrideRequest
+{
+    public long RoomId { get; set; }
+    public long RoleId { get; set; }
+
+    public byte[] Serialize()
+    {
+        using var w = new PayloadWriter();
+        w.WriteInt64(RoomId);
+        w.WriteInt64(RoleId);
+        return w.ToArray();
     }
 }
 

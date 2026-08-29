@@ -40,6 +40,7 @@ public:
     bool RemoveRole(int64_t userId, int64_t roleId);
     // Объединение прав всех ролей пользователя; admin — особый случай (см. Permissions.h)
     uint32_t GetUserPermissions(int64_t userId);
+    std::vector<int64_t> GetUserRoleIds(int64_t userId);
 
 private:
     SQLite::Database m_db;
@@ -54,4 +55,5 @@ private:
     std::string m_sqlDeleteRole;
     std::string m_sqlRemoveRole;
     std::string m_sqlGetUserRolePermissions;
+    std::string m_sqlListUserRoleIds;
 };

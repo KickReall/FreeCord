@@ -137,20 +137,31 @@ struct RoleMembershipRequestPayload {
     }
 };
 
-// Эффективные права пользователя (объединение прав всех его ролей). Используется
-// и как внутренний ответ auth -> gateway, и как push gateway -> клиент после логина.
+// Эффективные права пользователя (объединение прав всех его ролей) и список id
+// самих ролей — нужен gateway'ю, чтобы считать оверрайды по каналам (роль в
+// оверрайде может не совпадать с "суммой прав", поэтому одной суммы мало).
+// Используется и как внутренний ответ auth -> gateway, и как push gateway -> клиент после логина.
 struct MyPermissionsPayload {
     uint32_t permissions = 0;
+    std::vector<int64_t> roleIds;
 
     std::vector<uint8_t> Serialize() const {
         std::vector<uint8_t> buffer;
         WriteScalar(buffer, permissions);
+        WriteScalar(buffer, static_cast<uint32_t>(roleIds.size()));
+        for (int64_t roleId : roleIds) {
+            WriteScalar(buffer, roleId);
+        }
         return buffer;
     }
     static MyPermissionsPayload Deserialize(const std::vector<uint8_t>& buffer) {
         size_t offset = 0;
         MyPermissionsPayload r;
         r.permissions = ReadScalar<uint32_t>(buffer, offset);
+        uint32_t count = ReadScalar<uint32_t>(buffer, offset);
+        for (uint32_t i = 0; i < count; ++i) {
+            r.roleIds.push_back(ReadScalar<int64_t>(buffer, offset));
+        }
         return r;
     }
 };

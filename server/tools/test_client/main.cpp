@@ -94,7 +94,27 @@ void HandleFrame(const Frame& frame) {
         break;
     case MessageType::MyPermissions: {
         auto p = MyPermissionsPayload::Deserialize(frame.payload);
-        std::cout << "\n  [+] My permissions bitmask: " << p.permissions << std::endl;
+        std::cout << "\n  [+] My permissions bitmask: " << p.permissions << ", roles: [";
+        for (size_t i = 0; i < p.roleIds.size(); ++i) {
+            if (i > 0) std::cout << ", ";
+            std::cout << p.roleIds[i];
+        }
+        std::cout << "]" << std::endl;
+        break;
+    }
+    case MessageType::ChannelOverridesResponse: {
+        auto p = ChannelOverridesResponsePayload::Deserialize(frame.payload);
+        std::cout << "\n  --- channel overrides ---" << std::endl;
+        if (p.overrides.empty()) std::cout << "  (none)" << std::endl;
+        for (const auto& o : p.overrides) {
+            std::cout << "  roleId=" << o.roleId << " allow=" << o.allow << " deny=" << o.deny << std::endl;
+        }
+        break;
+    }
+    case MessageType::SetChannelOverrideResponse:
+    case MessageType::DeleteChannelOverrideResponse: {
+        auto p = StatusResponsePayload::Deserialize(frame.payload);
+        std::cout << "\n  " << (p.status == 0 ? "[+] OK" : "[!] Failed, status=" + std::to_string(p.status)) << std::endl;
         break;
     }
     case MessageType::RoleListResponse: {
@@ -216,6 +236,28 @@ void DoRoleMembership(bool isAssign) {
     Send(isAssign ? MessageType::RoleAssignRequest : MessageType::RoleRemoveRequest, p.Serialize());
 }
 
+void DoGetChannelOverrides() {
+    ChannelOverridesRequestPayload p;
+    std::cout << "  Room id: "; std::cin >> p.roomId;
+    Send(MessageType::ChannelOverridesRequest, p.Serialize());
+}
+
+void DoSetChannelOverride() {
+    SetChannelOverrideRequestPayload p;
+    std::cout << "  Room id: "; std::cin >> p.roomId;
+    std::cout << "  Role id: "; std::cin >> p.roleId;
+    std::cout << "  Allow (bitmask): "; std::cin >> p.allow;
+    std::cout << "  Deny (bitmask): "; std::cin >> p.deny;
+    Send(MessageType::SetChannelOverrideRequest, p.Serialize());
+}
+
+void DoDeleteChannelOverride() {
+    DeleteChannelOverrideRequestPayload p;
+    std::cout << "  Room id: "; std::cin >> p.roomId;
+    std::cout << "  Role id: "; std::cin >> p.roleId;
+    Send(MessageType::DeleteChannelOverrideRequest, p.Serialize());
+}
+
 int main() {
     SocketLibraryGuard socketLibrary;
     if (!socketLibrary.IsInitialized()) {
@@ -253,6 +295,7 @@ int main() {
         std::cout << "1-Register  2-Login  3-Create room  4-List rooms" << std::endl;
         std::cout << "5-Join  6-Leave  7-Send message  8-History  9-Ping  0-Exit" << std::endl;
         std::cout << "10-List roles  11-Create role  12-Update role  13-Delete role  14-Assign role  15-Remove role" << std::endl;
+        std::cout << "16-Get channel overrides  17-Set channel override  18-Delete channel override" << std::endl;
         std::cout << "> ";
 
         int choice = 0;
@@ -275,6 +318,9 @@ int main() {
         case 13: DoDeleteRole();          break;
         case 14: DoRoleMembership(true);  break;
         case 15: DoRoleMembership(false); break;
+        case 16: DoGetChannelOverrides();    break;
+        case 17: DoSetChannelOverride();     break;
+        case 18: DoDeleteChannelOverride();  break;
         default: std::cout << "  Unknown option" << std::endl; break;
         }
 

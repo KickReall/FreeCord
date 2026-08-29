@@ -51,6 +51,9 @@ public sealed class FreeCordConnection : IAsyncDisposable
     public event Action<StatusResponse>? RoleAssignResponseReceived;
     public event Action<StatusResponse>? RoleRemoveResponseReceived;
     public event Action<MyPermissions>? MyPermissionsReceived;
+    public event Action<ChannelOverridesResponse>? ChannelOverridesReceived;
+    public event Action<StatusResponse>? SetChannelOverrideResponseReceived;
+    public event Action<StatusResponse>? DeleteChannelOverrideResponseReceived;
     public event Action<BroadcastTextMessage>? MessageReceived;
     public event Action<UserPresence>? UserJoined;
     public event Action<UserPresence>? UserLeft;
@@ -250,6 +253,15 @@ public sealed class FreeCordConnection : IAsyncDisposable
             case MessageType.MyPermissions:
                 MyPermissionsReceived?.Invoke(MyPermissions.Deserialize(frame.Payload));
                 break;
+            case MessageType.ChannelOverridesResponse:
+                ChannelOverridesReceived?.Invoke(ChannelOverridesResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.SetChannelOverrideResponse:
+                SetChannelOverrideResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.DeleteChannelOverrideResponse:
+                DeleteChannelOverrideResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
         }
     }
 
@@ -296,6 +308,16 @@ public sealed class FreeCordConnection : IAsyncDisposable
 
     public Task RemoveRoleAsync(long userId, long roleId) =>
         SendAsync(MessageType.RoleRemoveRequest, new RoleMembershipRequest { UserId = userId, RoleId = roleId }.Serialize());
+
+    public Task GetChannelOverridesAsync(long roomId) =>
+        SendAsync(MessageType.ChannelOverridesRequest, new ChannelOverridesRequest { RoomId = roomId }.Serialize());
+
+    public Task SetChannelOverrideAsync(long roomId, long roleId, uint allow, uint deny) =>
+        SendAsync(MessageType.SetChannelOverrideRequest,
+            new SetChannelOverrideRequest { RoomId = roomId, RoleId = roleId, Allow = allow, Deny = deny }.Serialize());
+
+    public Task DeleteChannelOverrideAsync(long roomId, long roleId) =>
+        SendAsync(MessageType.DeleteChannelOverrideRequest, new DeleteChannelOverrideRequest { RoomId = roomId, RoleId = roleId }.Serialize());
 
     public async ValueTask DisposeAsync()
     {

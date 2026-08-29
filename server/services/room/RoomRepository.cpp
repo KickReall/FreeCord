@@ -19,6 +19,9 @@ RoomRepository::RoomRepository(const std::string& dbPath)
     m_sqlRemoveMember = LoadSqlFile("db/room/queries/remove_member.sql");
     m_sqlListRooms = LoadSqlFile("db/room/queries/list_rooms.sql");
     m_sqlListMembers = LoadSqlFile("db/room/queries/list_members.sql");
+    m_sqlGetChannelOverrides = LoadSqlFile("db/room/queries/get_channel_overrides.sql");
+    m_sqlSetChannelOverride = LoadSqlFile("db/room/queries/set_channel_override.sql");
+    m_sqlDeleteChannelOverride = LoadSqlFile("db/room/queries/delete_channel_override.sql");
 }
 
 int64_t RoomRepository::CreateRoom(const std::string& name) {
@@ -85,4 +88,37 @@ std::vector<int64_t> RoomRepository::ListMembers(int64_t roomId) {
         result.push_back(query.getColumn(0).getInt64());
     }
     return result;
+}
+
+std::vector<ChannelOverride> RoomRepository::GetChannelOverrides(int64_t roomId) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    std::vector<ChannelOverride> result;
+    SQLite::Statement query(m_db, m_sqlGetChannelOverrides);
+    query.bind(1, roomId);
+    while (query.executeStep()) {
+        ChannelOverride o;
+        o.roleId = query.getColumn(0).getInt64();
+        o.allow = static_cast<uint32_t>(query.getColumn(1).getInt64());
+        o.deny = static_cast<uint32_t>(query.getColumn(2).getInt64());
+        result.push_back(o);
+    }
+    return result;
+}
+
+void RoomRepository::SetChannelOverride(int64_t roomId, int64_t roleId, uint32_t allow, uint32_t deny) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    SQLite::Statement query(m_db, m_sqlSetChannelOverride);
+    query.bind(1, roomId);
+    query.bind(2, roleId);
+    query.bind(3, static_cast<int64_t>(allow));
+    query.bind(4, static_cast<int64_t>(deny));
+    query.exec();
+}
+
+void RoomRepository::DeleteChannelOverride(int64_t roomId, int64_t roleId) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    SQLite::Statement query(m_db, m_sqlDeleteChannelOverride);
+    query.bind(1, roomId);
+    query.bind(2, roleId);
+    query.exec();
 }

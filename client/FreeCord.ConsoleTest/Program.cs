@@ -39,7 +39,15 @@ connection.UserLeft += p => Console.WriteLine($"\n  <room {p.RoomId}> {p.Usernam
 connection.PongReceived += () => Console.WriteLine("\n  [+] Pong");
 connection.Disconnected += ex => Console.WriteLine($"\n  [!] Disconnected: {ex?.Message ?? "closed"}");
 
-connection.MyPermissionsReceived += p => Console.WriteLine($"\n  [+] My permissions bitmask: {p.Permissions}");
+connection.MyPermissionsReceived += p => Console.WriteLine($"\n  [+] My permissions bitmask: {p.Permissions}, roles: [{string.Join(", ", p.RoleIds)}]");
+connection.ChannelOverridesReceived += r =>
+{
+    Console.WriteLine("\n  --- channel overrides ---");
+    if (r.Overrides.Count == 0) Console.WriteLine("  (none)");
+    foreach (var o in r.Overrides) Console.WriteLine($"  roleId={o.RoleId} allow={o.Allow} deny={o.Deny}");
+};
+connection.SetChannelOverrideResponseReceived += r => Console.WriteLine(r.IsSuccess ? "\n  [+] OK" : $"\n  [!] Failed, status={r.Status}");
+connection.DeleteChannelOverrideResponseReceived += r => Console.WriteLine(r.IsSuccess ? "\n  [+] OK" : $"\n  [!] Failed, status={r.Status}");
 connection.RoleListReceived += r =>
 {
     Console.WriteLine("\n  --- roles ---");
@@ -79,6 +87,7 @@ while (true)
     Console.WriteLine("1-Register  2-Login  3-Create room  4-List rooms");
     Console.WriteLine("5-Join  6-Leave  7-Send message  8-History  9-Ping  0-Exit");
     Console.WriteLine("10-List roles  11-Create role  12-Update role  13-Delete role  14-Assign role  15-Remove role");
+    Console.WriteLine("16-Get channel overrides  17-Set channel override  18-Delete channel override");
     Console.Write("> ");
 
     var input = Console.ReadLine();
@@ -171,6 +180,36 @@ while (true)
                     if (input == "14") await connection.AssignRoleAsync(membershipUserId, membershipRoleId);
                     else await connection.RemoveRoleAsync(membershipUserId, membershipRoleId);
                 }
+            }
+            break;
+
+        case "16":
+            Console.Write("  Room id: ");
+            if (long.TryParse(Console.ReadLine(), out var overridesRoomId))
+                await connection.GetChannelOverridesAsync(overridesRoomId);
+            break;
+
+        case "17":
+            Console.Write("  Room id: ");
+            if (long.TryParse(Console.ReadLine(), out var setOverrideRoomId))
+            {
+                Console.Write("  Role id: ");
+                if (long.TryParse(Console.ReadLine(), out var setOverrideRoleId))
+                {
+                    Console.Write("  Allow (bitmask): "); uint.TryParse(Console.ReadLine(), out var allow);
+                    Console.Write("  Deny (bitmask): "); uint.TryParse(Console.ReadLine(), out var deny);
+                    await connection.SetChannelOverrideAsync(setOverrideRoomId, setOverrideRoleId, allow, deny);
+                }
+            }
+            break;
+
+        case "18":
+            Console.Write("  Room id: ");
+            if (long.TryParse(Console.ReadLine(), out var delOverrideRoomId))
+            {
+                Console.Write("  Role id: ");
+                if (long.TryParse(Console.ReadLine(), out var delOverrideRoleId))
+                    await connection.DeleteChannelOverrideAsync(delOverrideRoomId, delOverrideRoleId);
             }
             break;
     }
