@@ -61,12 +61,19 @@ connection.RoleUpdateResponseReceived += r => Console.WriteLine(r.IsSuccess ? "\
 connection.RoleDeleteResponseReceived += r => Console.WriteLine(r.IsSuccess ? "\n  [+] OK" : $"\n  [!] Failed, status={r.Status}");
 connection.RoleAssignResponseReceived += r => Console.WriteLine(r.IsSuccess ? "\n  [+] OK" : $"\n  [!] Failed, status={r.Status}");
 connection.RoleRemoveResponseReceived += r => Console.WriteLine(r.IsSuccess ? "\n  [+] OK" : $"\n  [!] Failed, status={r.Status}");
+connection.ChannelKickResponseReceived += r => Console.WriteLine(r.IsSuccess ? "\n  [+] OK" : $"\n  [!] Failed, status={r.Status}");
+connection.ChannelUnbanResponseReceived += r => Console.WriteLine(r.IsSuccess ? "\n  [+] OK" : $"\n  [!] Failed, status={r.Status}");
+connection.ChannelMuteResponseReceived += r => Console.WriteLine(r.IsSuccess ? "\n  [+] OK" : $"\n  [!] Failed, status={r.Status}");
+connection.ChannelUnmuteResponseReceived += r => Console.WriteLine(r.IsSuccess ? "\n  [+] OK" : $"\n  [!] Failed, status={r.Status}");
+connection.ChannelKicked += p => Console.WriteLine($"\n  [!] You were kicked from room {p.RoomId}");
 
 static string Describe(byte status) => status switch
 {
     0 => "OK",
     1 => "room not found",
     2 => "membership conflict",
+    253 => "banned from this channel",
+    254 => "insufficient permissions",
     _ => $"error {status}"
 };
 
@@ -88,6 +95,7 @@ while (true)
     Console.WriteLine("5-Join  6-Leave  7-Send message  8-History  9-Ping  0-Exit");
     Console.WriteLine("10-List roles  11-Create role  12-Update role  13-Delete role  14-Assign role  15-Remove role");
     Console.WriteLine("16-Get channel overrides  17-Set channel override  18-Delete channel override");
+    Console.WriteLine("19-Kick from channel  20-Unban from channel  21-Mute in channel  22-Unmute in channel");
     Console.Write("> ");
 
     var input = Console.ReadLine();
@@ -210,6 +218,27 @@ while (true)
                 Console.Write("  Role id: ");
                 if (long.TryParse(Console.ReadLine(), out var delOverrideRoleId))
                     await connection.DeleteChannelOverrideAsync(delOverrideRoomId, delOverrideRoleId);
+            }
+            break;
+
+        case "19":
+        case "20":
+        case "21":
+        case "22":
+            Console.Write("  Room id: ");
+            if (long.TryParse(Console.ReadLine(), out var modRoomId))
+            {
+                Console.Write("  User id: ");
+                if (long.TryParse(Console.ReadLine(), out var modUserId))
+                {
+                    switch (input)
+                    {
+                        case "19": await connection.KickFromChannelAsync(modRoomId, modUserId); break;
+                        case "20": await connection.UnbanFromChannelAsync(modRoomId, modUserId); break;
+                        case "21": await connection.MuteInChannelAsync(modRoomId, modUserId); break;
+                        case "22": await connection.UnmuteInChannelAsync(modRoomId, modUserId); break;
+                    }
+                }
             }
             break;
     }

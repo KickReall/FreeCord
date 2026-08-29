@@ -33,6 +33,7 @@ enum class MessageType : uint16_t {
     UserRegistered = 0x0041,  // gateway -> все: зарегистрировался новый пользователь
     UserJoined = 0x0030,  // gateway -> клиент: кто-то зашёл в комнату
     UserLeft = 0x0031,  // gateway -> клиент: кто-то вышел из комнаты
+    ChannelKicked = 0x0032,  // gateway -> клиент: тебя кикнули из канала (roomId) — принудительный выход прямо сейчас
 
     Ping = 0x00F0,
     Pong = 0x00F1,
@@ -59,6 +60,20 @@ enum class MessageType : uint16_t {
     SetChannelOverrideResponse = 0x200D,  // room -> gateway: status
     DeleteChannelOverrideRequest = 0x200E,  // gateway -> room: roomId, roleId — сброс к базовым правам роли
     DeleteChannelOverrideResponse = 0x200F,  // room -> gateway: status
+
+    // Модерация по каналам: бан (используется и для кика — gateway дополнительно
+    // принудительно выкидывает пользователя, если он сейчас онлайн в этой комнате) и мут.
+    // Те же типы используются и клиент->gateway, и gateway->room, как и остальные Room-сообщения.
+    ChannelModerationStatusRequest = 0x2010,  // gateway -> room: roomId, userId (internal only)
+    ChannelModerationStatusResponse = 0x2011,  // room -> gateway: banned + muted (internal only)
+    ChannelKickRequest = 0x2012,  // roomId, userId — бан от канала
+    ChannelKickResponse = 0x2013,  // status
+    ChannelUnbanRequest = 0x2014,  // roomId, userId
+    ChannelUnbanResponse = 0x2015,  // status
+    ChannelMuteRequest = 0x2016,  // roomId, userId
+    ChannelMuteResponse = 0x2017,  // status
+    ChannelUnmuteRequest = 0x2018,  // roomId, userId
+    ChannelUnmuteResponse = 0x2019,  // status
 
     // --- Gateway <-> Message (internal) ---
     SendMessageRequest = 0x3000,  // gateway -> message: roomId, senderId, text

@@ -379,6 +379,18 @@ public sealed class DeleteChannelOverrideRequest
     }
 }
 
+/// <summary>Пришло сразу после кика — комната, из которой только что выкинули.</summary>
+public sealed class ChannelKickedNotification
+{
+    public long RoomId { get; init; }
+
+    public static ChannelKickedNotification Deserialize(byte[] data)
+    {
+        using var r = new PayloadReader(data);
+        return new ChannelKickedNotification { RoomId = r.ReadInt64() };
+    }
+}
+
 public sealed class UserRegisteredNotification
 {
     public long UserId { get; init; }

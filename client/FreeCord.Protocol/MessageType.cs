@@ -17,6 +17,7 @@ public enum MessageType : ushort
     UserRegistered = 0x0041,
     UserJoined = 0x0030,
 	UserLeft = 0x0031,
+	ChannelKicked = 0x0032,
 
 	Ping = 0x00F0,
 	Pong = 0x00F1,
@@ -35,6 +36,16 @@ public enum MessageType : ushort
 	SetChannelOverrideResponse = 0x200D,
 	DeleteChannelOverrideRequest = 0x200E,
 	DeleteChannelOverrideResponse = 0x200F,
+
+	// Модерация по каналам: кик = бан + принудительный выход онлайн-пользователя
+	ChannelKickRequest = 0x2012,
+	ChannelKickResponse = 0x2013,
+	ChannelUnbanRequest = 0x2014,
+	ChannelUnbanResponse = 0x2015,
+	ChannelMuteRequest = 0x2016,
+	ChannelMuteResponse = 0x2017,
+	ChannelUnmuteRequest = 0x2018,
+	ChannelUnmuteResponse = 0x2019,
 
 	HistoryRequest = 0x3002,
 	HistoryResponse = 0x3003,

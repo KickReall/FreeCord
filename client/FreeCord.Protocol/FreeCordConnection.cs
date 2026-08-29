@@ -54,6 +54,11 @@ public sealed class FreeCordConnection : IAsyncDisposable
     public event Action<ChannelOverridesResponse>? ChannelOverridesReceived;
     public event Action<StatusResponse>? SetChannelOverrideResponseReceived;
     public event Action<StatusResponse>? DeleteChannelOverrideResponseReceived;
+    public event Action<StatusResponse>? ChannelKickResponseReceived;
+    public event Action<StatusResponse>? ChannelUnbanResponseReceived;
+    public event Action<StatusResponse>? ChannelMuteResponseReceived;
+    public event Action<StatusResponse>? ChannelUnmuteResponseReceived;
+    public event Action<ChannelKickedNotification>? ChannelKicked;
     public event Action<BroadcastTextMessage>? MessageReceived;
     public event Action<UserPresence>? UserJoined;
     public event Action<UserPresence>? UserLeft;
@@ -262,6 +267,21 @@ public sealed class FreeCordConnection : IAsyncDisposable
             case MessageType.DeleteChannelOverrideResponse:
                 DeleteChannelOverrideResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
                 break;
+            case MessageType.ChannelKickResponse:
+                ChannelKickResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.ChannelUnbanResponse:
+                ChannelUnbanResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.ChannelMuteResponse:
+                ChannelMuteResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.ChannelUnmuteResponse:
+                ChannelUnmuteResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.ChannelKicked:
+                ChannelKicked?.Invoke(ChannelKickedNotification.Deserialize(frame.Payload));
+                break;
         }
     }
 
@@ -318,6 +338,19 @@ public sealed class FreeCordConnection : IAsyncDisposable
 
     public Task DeleteChannelOverrideAsync(long roomId, long roleId) =>
         SendAsync(MessageType.DeleteChannelOverrideRequest, new DeleteChannelOverrideRequest { RoomId = roomId, RoleId = roleId }.Serialize());
+
+    // Кик = бан от канала + принудительный выход, если пользователь сейчас онлайн в нём
+    public Task KickFromChannelAsync(long roomId, long userId) =>
+        SendAsync(MessageType.ChannelKickRequest, new RoomMembershipRequest { RoomId = roomId, UserId = userId }.Serialize());
+
+    public Task UnbanFromChannelAsync(long roomId, long userId) =>
+        SendAsync(MessageType.ChannelUnbanRequest, new RoomMembershipRequest { RoomId = roomId, UserId = userId }.Serialize());
+
+    public Task MuteInChannelAsync(long roomId, long userId) =>
+        SendAsync(MessageType.ChannelMuteRequest, new RoomMembershipRequest { RoomId = roomId, UserId = userId }.Serialize());
+
+    public Task UnmuteInChannelAsync(long roomId, long userId) =>
+        SendAsync(MessageType.ChannelUnmuteRequest, new RoomMembershipRequest { RoomId = roomId, UserId = userId }.Serialize());
 
     public async ValueTask DisposeAsync()
     {

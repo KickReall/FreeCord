@@ -37,6 +37,14 @@ public:
     void SetChannelOverride(int64_t roomId, int64_t roleId, uint32_t allow, uint32_t deny);
     void DeleteChannelOverride(int64_t roomId, int64_t roleId);
 
+    // Кик = BanUser + принудительный выход онлайн-пользователя на стороне gateway.
+    void BanUser(int64_t roomId, int64_t userId);
+    void UnbanUser(int64_t roomId, int64_t userId);
+    bool IsBanned(int64_t roomId, int64_t userId);
+    void MuteUser(int64_t roomId, int64_t userId);
+    void UnmuteUser(int64_t roomId, int64_t userId);
+    bool IsMuted(int64_t roomId, int64_t userId);
+
 private:
     SQLite::Database m_db;
     std::mutex m_mutex;
@@ -50,4 +58,10 @@ private:
     std::string m_sqlGetChannelOverrides;
     std::string m_sqlSetChannelOverride;
     std::string m_sqlDeleteChannelOverride;
+    std::string m_sqlBanUser;
+    std::string m_sqlUnbanUser;
+    std::string m_sqlIsBanned;
+    std::string m_sqlMuteUser;
+    std::string m_sqlUnmuteUser;
+    std::string m_sqlIsMuted;
 };

@@ -95,6 +95,40 @@ uint32_t EffectivePermissionsInRoom(const SessionPtr& session, int64_t roomId) {
     return (base & ~deny) | allow;
 }
 
+// Статус модерации пользователя в комнате (бан/мут). Как и оверрайды, для admin
+// (сентинел 0xFFFFFFFF в session->permissions) не проверяется вовсе — иначе
+// любая роль с KickMembers/ManageChannelModeration могла бы запереть суперпользователя.
+ChannelModerationStatusResponsePayload GetModerationStatus(const SessionPtr& session, int64_t roomId) {
+    ChannelModerationStatusResponsePayload result;
+    if (session->permissions.load() == 0xFFFFFFFFu) return result;
+
+    RoomMembershipRequestPayload request;
+    request.roomId = roomId;
+    request.userId = session->userId;
+
+    Frame response;
+    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::ChannelModerationStatusRequest,
+        request.Serialize(), MessageType::ChannelModerationStatusResponse, response,
+        g_config.gateway.serviceCallTimeoutMs)) {
+        return result; // room_service недоступен — не блокируем на ровном месте
+    }
+    return ChannelModerationStatusResponsePayload::Deserialize(response.payload);
+}
+
+// Если пользователь сейчас онлайн и держит открытой эту комнату — выкинуть его
+// немедленно (используется после кика, чтобы бан подействовал сразу, а не только
+// при следующей попытке зайти).
+void ForceLeaveRoomIfOnline(int64_t userId, int64_t roomId) {
+    for (const auto& session : g_sessions.GetSessionsForUsers({ userId })) {
+        int64_t expected = roomId;
+        if (session->currentRoomId.compare_exchange_strong(expected, 0)) {
+            RoomMembersRequestPayload notice;
+            notice.roomId = roomId;
+            SendToSession(session, MessageType::ChannelKicked, notice.Serialize());
+        }
+    }
+}
+
 void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
     auto request = AuthRequestPayload::Deserialize(frame.payload);
 
@@ -186,6 +220,15 @@ void HandleSelectRoom(ClientContext& ctx, const Frame& frame) {
             << " lacks OpenChannel in room " << request.roomId << std::endl;
         StatusResponsePayload forbidden;
         forbidden.status = 254;
+        SendToSession(ctx.session, MessageType::JoinRoomResponse, forbidden.Serialize());
+        return;
+    }
+
+    if (GetModerationStatus(ctx.session, request.roomId).banned) {
+        std::cout << "[gateway] userId=" << ctx.session->userId
+            << " is banned from room " << request.roomId << std::endl;
+        StatusResponsePayload forbidden;
+        forbidden.status = 253; // забанен в этом канале
         SendToSession(ctx.session, MessageType::JoinRoomResponse, forbidden.Serialize());
         return;
     }
@@ -282,6 +325,12 @@ void HandleTextMessage(ClientContext& ctx, const Frame& frame) {
     if ((EffectivePermissionsInRoom(ctx.session, clientMessage.roomId) & static_cast<uint32_t>(Permission::SendMessages)) == 0) {
         std::cout << "[gateway] userId=" << ctx.session->userId
             << " lacks SendMessages in room " << clientMessage.roomId << std::endl;
+        return;
+    }
+
+    if (GetModerationStatus(ctx.session, clientMessage.roomId).muted) {
+        std::cout << "[gateway] userId=" << ctx.session->userId
+            << " is muted in room " << clientMessage.roomId << std::endl;
         return;
     }
 
@@ -451,6 +500,72 @@ void HandleDeleteChannelOverride(ClientContext& ctx, const Frame& frame) {
     SendToSession(ctx.session, MessageType::DeleteChannelOverrideResponse, roomResponse.payload);
 }
 
+void HandleChannelKick(ClientContext& ctx, const Frame& frame) {
+    if (!HasPermission(ctx.session, Permission::KickMembers)) {
+        StatusResponsePayload forbidden;
+        forbidden.status = 254;
+        SendToSession(ctx.session, MessageType::ChannelKickResponse, forbidden.Serialize());
+        return;
+    }
+    Frame roomResponse;
+    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::ChannelKickRequest, frame.payload,
+        MessageType::ChannelKickResponse, roomResponse, g_config.gateway.serviceCallTimeoutMs)) {
+        return;
+    }
+    SendToSession(ctx.session, MessageType::ChannelKickResponse, roomResponse.payload);
+
+    auto result = StatusResponsePayload::Deserialize(roomResponse.payload);
+    if (result.status == 0) {
+        auto request = RoomMembershipRequestPayload::Deserialize(frame.payload);
+        ForceLeaveRoomIfOnline(request.userId, request.roomId);
+    }
+}
+
+void HandleChannelUnban(ClientContext& ctx, const Frame& frame) {
+    if (!HasPermission(ctx.session, Permission::KickMembers)) {
+        StatusResponsePayload forbidden;
+        forbidden.status = 254;
+        SendToSession(ctx.session, MessageType::ChannelUnbanResponse, forbidden.Serialize());
+        return;
+    }
+    Frame roomResponse;
+    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::ChannelUnbanRequest, frame.payload,
+        MessageType::ChannelUnbanResponse, roomResponse, g_config.gateway.serviceCallTimeoutMs)) {
+        return;
+    }
+    SendToSession(ctx.session, MessageType::ChannelUnbanResponse, roomResponse.payload);
+}
+
+void HandleChannelMute(ClientContext& ctx, const Frame& frame) {
+    if (!HasPermission(ctx.session, Permission::ManageChannelModeration)) {
+        StatusResponsePayload forbidden;
+        forbidden.status = 254;
+        SendToSession(ctx.session, MessageType::ChannelMuteResponse, forbidden.Serialize());
+        return;
+    }
+    Frame roomResponse;
+    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::ChannelMuteRequest, frame.payload,
+        MessageType::ChannelMuteResponse, roomResponse, g_config.gateway.serviceCallTimeoutMs)) {
+        return;
+    }
+    SendToSession(ctx.session, MessageType::ChannelMuteResponse, roomResponse.payload);
+}
+
+void HandleChannelUnmute(ClientContext& ctx, const Frame& frame) {
+    if (!HasPermission(ctx.session, Permission::ManageChannelModeration)) {
+        StatusResponsePayload forbidden;
+        forbidden.status = 254;
+        SendToSession(ctx.session, MessageType::ChannelUnmuteResponse, forbidden.Serialize());
+        return;
+    }
+    Frame roomResponse;
+    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::ChannelUnmuteRequest, frame.payload,
+        MessageType::ChannelUnmuteResponse, roomResponse, g_config.gateway.serviceCallTimeoutMs)) {
+        return;
+    }
+    SendToSession(ctx.session, MessageType::ChannelUnmuteResponse, roomResponse.payload);
+}
+
 void ClientThread(socket_t clientSocket) {
     ClientContext ctx;
     ctx.socket = clientSocket;
@@ -523,6 +638,10 @@ void ClientThread(socket_t clientSocket) {
         case MessageType::ChannelOverridesRequest:      HandleGetChannelOverrides(ctx, frame);    break;
         case MessageType::SetChannelOverrideRequest:    HandleSetChannelOverride(ctx, frame);     break;
         case MessageType::DeleteChannelOverrideRequest: HandleDeleteChannelOverride(ctx, frame);  break;
+        case MessageType::ChannelKickRequest:   HandleChannelKick(ctx, frame);   break;
+        case MessageType::ChannelUnbanRequest:  HandleChannelUnban(ctx, frame);  break;
+        case MessageType::ChannelMuteRequest:   HandleChannelMute(ctx, frame);   break;
+        case MessageType::ChannelUnmuteRequest: HandleChannelUnmute(ctx, frame); break;
         case MessageType::Ping:
             // Отвечаем только залогиненным — до логина сессии ещё нет
             if (ctx.session) SendToSession(ctx.session, MessageType::Pong, frame.payload);

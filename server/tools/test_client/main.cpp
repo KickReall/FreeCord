@@ -71,7 +71,11 @@ void HandleFrame(const Frame& frame) {
     case MessageType::RoomLeaveResponse: {
         auto p = StatusResponsePayload::Deserialize(frame.payload);
         const char* msg[] = { "[+] OK", "[!] Room not found", "[!] Membership conflict" };
-        std::cout << "\n  " << (p.status < 3 ? msg[p.status] : "[!] Error") << std::endl;
+        std::string text = p.status < 3 ? msg[p.status]
+            : p.status == 253 ? "[!] Banned from this channel"
+            : p.status == 254 ? "[!] Insufficient permissions"
+            : "[!] Error";
+        std::cout << "\n  " << text << std::endl;
         break;
     }
     case MessageType::HistoryResponse: {
@@ -139,6 +143,20 @@ void HandleFrame(const Frame& frame) {
     case MessageType::RoleRemoveResponse: {
         auto p = StatusResponsePayload::Deserialize(frame.payload);
         std::cout << "\n  " << (p.status == 0 ? "[+] OK" : "[!] Failed, status=" + std::to_string(p.status)) << std::endl;
+        break;
+    }
+    case MessageType::ChannelKickResponse:
+    case MessageType::ChannelUnbanResponse:
+    case MessageType::ChannelMuteResponse:
+    case MessageType::ChannelUnmuteResponse: {
+        auto p = StatusResponsePayload::Deserialize(frame.payload);
+        std::cout << "\n  " << (p.status == 0 ? "[+] OK" : "[!] Failed, status=" + std::to_string(p.status)) << std::endl;
+        break;
+    }
+    case MessageType::ChannelKicked: {
+        auto p = RoomMembersRequestPayload::Deserialize(frame.payload);
+        std::cout << "\n  [!] You were kicked from room " << p.roomId << std::endl;
+        std::cout << "> " << std::flush;
         break;
     }
     case MessageType::UserJoined:
@@ -258,6 +276,13 @@ void DoDeleteChannelOverride() {
     Send(MessageType::DeleteChannelOverrideRequest, p.Serialize());
 }
 
+void DoChannelModeration(MessageType type) {
+    RoomMembershipRequestPayload p;
+    std::cout << "  Room id: "; std::cin >> p.roomId;
+    std::cout << "  User id: "; std::cin >> p.userId;
+    Send(type, p.Serialize());
+}
+
 int main() {
     SocketLibraryGuard socketLibrary;
     if (!socketLibrary.IsInitialized()) {
@@ -296,6 +321,7 @@ int main() {
         std::cout << "5-Join  6-Leave  7-Send message  8-History  9-Ping  0-Exit" << std::endl;
         std::cout << "10-List roles  11-Create role  12-Update role  13-Delete role  14-Assign role  15-Remove role" << std::endl;
         std::cout << "16-Get channel overrides  17-Set channel override  18-Delete channel override" << std::endl;
+        std::cout << "19-Kick from channel  20-Unban from channel  21-Mute in channel  22-Unmute in channel" << std::endl;
         std::cout << "> ";
 
         int choice = 0;
@@ -321,6 +347,10 @@ int main() {
         case 16: DoGetChannelOverrides();    break;
         case 17: DoSetChannelOverride();     break;
         case 18: DoDeleteChannelOverride();  break;
+        case 19: DoChannelModeration(MessageType::ChannelKickRequest);   break;
+        case 20: DoChannelModeration(MessageType::ChannelUnbanRequest);  break;
+        case 21: DoChannelModeration(MessageType::ChannelMuteRequest);   break;
+        case 22: DoChannelModeration(MessageType::ChannelUnmuteRequest); break;
         default: std::cout << "  Unknown option" << std::endl; break;
         }
 

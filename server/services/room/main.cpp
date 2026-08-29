@@ -114,6 +114,70 @@ void HandleDeleteChannelOverride(socket_t sock, RoomRepository& repo, const Fram
     SendFrame(sock, static_cast<uint16_t>(MessageType::DeleteChannelOverrideResponse), frame.sequence, response.Serialize());
 }
 
+void HandleChannelModerationStatus(socket_t sock, RoomRepository& repo, const Frame& frame) {
+    auto request = RoomMembershipRequestPayload::Deserialize(frame.payload);
+    ChannelModerationStatusResponsePayload response;
+    response.banned = repo.IsBanned(request.roomId, request.userId) ? 1 : 0;
+    response.muted = repo.IsMuted(request.roomId, request.userId) ? 1 : 0;
+    SendFrame(sock, static_cast<uint16_t>(MessageType::ChannelModerationStatusResponse), frame.sequence, response.Serialize());
+}
+
+void HandleChannelKick(socket_t sock, RoomRepository& repo, const Frame& frame) {
+    auto request = RoomMembershipRequestPayload::Deserialize(frame.payload);
+    std::cout << "[room] Kick roomId=" << request.roomId << " userId=" << request.userId << std::endl;
+
+    StatusResponsePayload response;
+    if (!repo.RoomExists(request.roomId)) {
+        response.status = 1; // room not found
+    }
+    else {
+        repo.BanUser(request.roomId, request.userId);
+        response.status = 0;
+    }
+    SendFrame(sock, static_cast<uint16_t>(MessageType::ChannelKickResponse), frame.sequence, response.Serialize());
+}
+
+void HandleChannelUnban(socket_t sock, RoomRepository& repo, const Frame& frame) {
+    auto request = RoomMembershipRequestPayload::Deserialize(frame.payload);
+    StatusResponsePayload response;
+    if (!repo.RoomExists(request.roomId)) {
+        response.status = 1; // room not found
+    }
+    else {
+        repo.UnbanUser(request.roomId, request.userId);
+        response.status = 0;
+    }
+    SendFrame(sock, static_cast<uint16_t>(MessageType::ChannelUnbanResponse), frame.sequence, response.Serialize());
+}
+
+void HandleChannelMute(socket_t sock, RoomRepository& repo, const Frame& frame) {
+    auto request = RoomMembershipRequestPayload::Deserialize(frame.payload);
+    std::cout << "[room] Mute roomId=" << request.roomId << " userId=" << request.userId << std::endl;
+
+    StatusResponsePayload response;
+    if (!repo.RoomExists(request.roomId)) {
+        response.status = 1; // room not found
+    }
+    else {
+        repo.MuteUser(request.roomId, request.userId);
+        response.status = 0;
+    }
+    SendFrame(sock, static_cast<uint16_t>(MessageType::ChannelMuteResponse), frame.sequence, response.Serialize());
+}
+
+void HandleChannelUnmute(socket_t sock, RoomRepository& repo, const Frame& frame) {
+    auto request = RoomMembershipRequestPayload::Deserialize(frame.payload);
+    StatusResponsePayload response;
+    if (!repo.RoomExists(request.roomId)) {
+        response.status = 1; // room not found
+    }
+    else {
+        repo.UnmuteUser(request.roomId, request.userId);
+        response.status = 0;
+    }
+    SendFrame(sock, static_cast<uint16_t>(MessageType::ChannelUnmuteResponse), frame.sequence, response.Serialize());
+}
+
 void HandleClient(socket_t sock, RoomRepository& repo) {
     Frame frame;
     if (ReceiveFrame(sock, frame) != FrameResult::Ok) {
@@ -131,6 +195,11 @@ void HandleClient(socket_t sock, RoomRepository& repo) {
     case MessageType::ChannelOverridesRequest:       HandleGetChannelOverrides(sock, repo, frame);    break;
     case MessageType::SetChannelOverrideRequest:     HandleSetChannelOverride(sock, repo, frame);     break;
     case MessageType::DeleteChannelOverrideRequest:  HandleDeleteChannelOverride(sock, repo, frame);  break;
+    case MessageType::ChannelModerationStatusRequest: HandleChannelModerationStatus(sock, repo, frame); break;
+    case MessageType::ChannelKickRequest:            HandleChannelKick(sock, repo, frame);    break;
+    case MessageType::ChannelUnbanRequest:           HandleChannelUnban(sock, repo, frame);   break;
+    case MessageType::ChannelMuteRequest:            HandleChannelMute(sock, repo, frame);    break;
+    case MessageType::ChannelUnmuteRequest:          HandleChannelUnmute(sock, repo, frame);  break;
     default:
         std::cout << "[room] Unexpected messageType: " << frame.messageType << std::endl;
         break;

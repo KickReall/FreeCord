@@ -22,6 +22,12 @@ RoomRepository::RoomRepository(const std::string& dbPath)
     m_sqlGetChannelOverrides = LoadSqlFile("db/room/queries/get_channel_overrides.sql");
     m_sqlSetChannelOverride = LoadSqlFile("db/room/queries/set_channel_override.sql");
     m_sqlDeleteChannelOverride = LoadSqlFile("db/room/queries/delete_channel_override.sql");
+    m_sqlBanUser = LoadSqlFile("db/room/queries/ban_user.sql");
+    m_sqlUnbanUser = LoadSqlFile("db/room/queries/unban_user.sql");
+    m_sqlIsBanned = LoadSqlFile("db/room/queries/is_banned.sql");
+    m_sqlMuteUser = LoadSqlFile("db/room/queries/mute_user.sql");
+    m_sqlUnmuteUser = LoadSqlFile("db/room/queries/unmute_user.sql");
+    m_sqlIsMuted = LoadSqlFile("db/room/queries/is_muted.sql");
 }
 
 int64_t RoomRepository::CreateRoom(const std::string& name) {
@@ -121,4 +127,52 @@ void RoomRepository::DeleteChannelOverride(int64_t roomId, int64_t roleId) {
     query.bind(1, roomId);
     query.bind(2, roleId);
     query.exec();
+}
+
+void RoomRepository::BanUser(int64_t roomId, int64_t userId) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    SQLite::Statement query(m_db, m_sqlBanUser);
+    query.bind(1, roomId);
+    query.bind(2, userId);
+    query.exec();
+}
+
+void RoomRepository::UnbanUser(int64_t roomId, int64_t userId) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    SQLite::Statement query(m_db, m_sqlUnbanUser);
+    query.bind(1, roomId);
+    query.bind(2, userId);
+    query.exec();
+}
+
+bool RoomRepository::IsBanned(int64_t roomId, int64_t userId) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    SQLite::Statement query(m_db, m_sqlIsBanned);
+    query.bind(1, roomId);
+    query.bind(2, userId);
+    return query.executeStep();
+}
+
+void RoomRepository::MuteUser(int64_t roomId, int64_t userId) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    SQLite::Statement query(m_db, m_sqlMuteUser);
+    query.bind(1, roomId);
+    query.bind(2, userId);
+    query.exec();
+}
+
+void RoomRepository::UnmuteUser(int64_t roomId, int64_t userId) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    SQLite::Statement query(m_db, m_sqlUnmuteUser);
+    query.bind(1, roomId);
+    query.bind(2, userId);
+    query.exec();
+}
+
+bool RoomRepository::IsMuted(int64_t roomId, int64_t userId) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    SQLite::Statement query(m_db, m_sqlIsMuted);
+    query.bind(1, roomId);
+    query.bind(2, userId);
+    return query.executeStep();
 }

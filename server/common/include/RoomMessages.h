@@ -219,6 +219,27 @@ struct SetChannelOverrideRequestPayload {
     }
 };
 
+// Ответ на ChannelModerationStatusRequest (roomId+userId — переиспользует
+// RoomMembershipRequestPayload, как Join/Leave/Kick/Mute).
+struct ChannelModerationStatusResponsePayload {
+    uint8_t banned = 0;
+    uint8_t muted = 0;
+
+    std::vector<uint8_t> Serialize() const {
+        std::vector<uint8_t> buffer;
+        WriteScalar(buffer, banned);
+        WriteScalar(buffer, muted);
+        return buffer;
+    }
+    static ChannelModerationStatusResponsePayload Deserialize(const std::vector<uint8_t>& buffer) {
+        size_t offset = 0;
+        ChannelModerationStatusResponsePayload r;
+        r.banned = ReadScalar<uint8_t>(buffer, offset);
+        r.muted = ReadScalar<uint8_t>(buffer, offset);
+        return r;
+    }
+};
+
 // Сброс оверрайда роли на канале обратно к базовым правам роли (без исключения из canала).
 struct DeleteChannelOverrideRequestPayload {
     int64_t roomId = 0;
