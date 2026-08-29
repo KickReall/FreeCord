@@ -5,6 +5,11 @@
 #include "TcpFramer.h"
 #include "ProtocolTypes.h"
 
+// Если внутренний сервис завис или не отвечает — не ждать ответа вечно.
+// Поток gateway, обслуживающий конкретного клиента, иначе блокируется навсегда,
+// и клиент перестаёт получать вообще любые ответы по своему соединению.
+constexpr int kServiceCallTimeoutMs = 5000;
+
 // Одноразовый запрос к внутреннему сервису: connect -> send -> recv -> close.
 // Сервисы закрывают соединение после каждого кадра, поэтому переиспользовать сокет нельзя.
 inline bool CallService(const char* host, int port,
@@ -12,6 +17,8 @@ inline bool CallService(const char* host, int port,
     MessageType expectedResponseType, Frame& outResponse) {
     socket_t sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (sock == kInvalidSocket) return false;
+
+    SetRecvTimeout(sock, kServiceCallTimeoutMs);
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
