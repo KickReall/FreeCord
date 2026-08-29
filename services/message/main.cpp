@@ -1,6 +1,7 @@
 #include <iostream>
 #include <chrono>
 #include <thread>
+#include <memory>
 
 #include "PlatformSocket.h"
 #include "TcpFramer.h"
@@ -9,7 +10,7 @@
 #include "MessageRepository.h"
 #include "Config.h"
 
-constexpr size_t MAX_TEXT_LENGTH = 4000;
+AppConfig g_config;
 
 int64_t CurrentUnixTime() {
     return std::chrono::duration_cast<std::chrono::seconds>(
@@ -25,7 +26,7 @@ void HandleSend(socket_t sock, MessageRepository& repo, const Frame& frame) {
         response.status = 1;
         std::cout << "[message] Rejected: empty text" << std::endl;
     }
-    else if (request.text.size() > MAX_TEXT_LENGTH) {
+    else if (request.text.size() > static_cast<size_t>(g_config.message.maxTextLength)) {
         response.status = 2;
         std::cout << "[message] Rejected: text too long (" << request.text.size() << ")" << std::endl;
     }
@@ -80,9 +81,8 @@ void HandleClient(socket_t sock, MessageRepository& repo) {
 }
 
 int main() {
-    AppConfig config;
     try {
-        config = LoadConfig();
+        g_config = LoadConfig();
     }
     catch (const std::exception& ex) {
         std::cerr << "[message] Config error: " << ex.what() << std::endl;
@@ -95,24 +95,31 @@ int main() {
         return 1;
     }
 
-    MessageRepository repo(config.message.dbPath);
-    std::cout << "[message] Database ready at " << config.message.dbPath << std::endl;
+    std::unique_ptr<MessageRepository> repo;
+    try {
+        repo = std::make_unique<MessageRepository>(g_config.message.dbPath);
+    }
+    catch (const std::exception& ex) {
+        std::cerr << "[message] Database error: " << ex.what() << std::endl;
+        return 1;
+    }
+    std::cout << "[message] Database ready at " << g_config.message.dbPath << std::endl;
 
     socket_t listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     sockaddr_in serverAddr{};
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_addr.s_addr = INADDR_ANY;
-    serverAddr.sin_port = htons(config.message.port);
+    serverAddr.sin_port = htons(g_config.message.port);
 
     bind(listenSocket, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
     listen(listenSocket, SOMAXCONN);
 
-    std::cout << "[message] Listening on port " << config.message.port << std::endl;
+    std::cout << "[message] Listening on port " << g_config.message.port << std::endl;
 
     while (true) {
         socket_t clientSocket = accept(listenSocket, nullptr, nullptr);
         if (clientSocket == kInvalidSocket) continue;
-        std::thread(HandleClient, clientSocket, std::ref(repo)).detach();
+        std::thread(HandleClient, clientSocket, std::ref(*repo)).detach();
     }
 
     CloseSocket(listenSocket);

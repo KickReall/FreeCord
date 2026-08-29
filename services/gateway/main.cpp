@@ -13,9 +13,9 @@
 #include "SessionManager.h"
 #include "Config.h"
 
+// Внутренний инвариант, завязанный на seed-данные в db/room/migrations/001_initial.sql —
+// не выносим в config.json, иначе конфиг и БД могут разойтись.
 constexpr int64_t SYSTEM_ROOM_ID = 1;
-constexpr int RECV_TIMEOUT_MS = 5000;        // как часто просыпаемся проверить тишину
-constexpr int CLIENT_IDLE_TIMEOUT_SEC = 45;  // после этого считаем клиента мёртвым
 
 SessionManager g_sessions;
 AppConfig g_config;
@@ -59,7 +59,7 @@ void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
         isRegister ? MessageType::RegisterRequest : MessageType::AuthRequest,
         frame.payload,
         isRegister ? MessageType::RegisterResponse : MessageType::AuthResponse,
-        authResponse);
+        authResponse, g_config.gateway.serviceCallTimeoutMs);
 
     AuthResponsePayload response;
     if (!ok) {
@@ -88,7 +88,8 @@ void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
 
             Frame saveResponse;
             if (CallService(g_config.gateway.serviceHost.c_str(), g_config.message.port, MessageType::SendMessageRequest,
-                sysMessage.Serialize(), MessageType::SendMessageResponse, saveResponse)) {
+                sysMessage.Serialize(), MessageType::SendMessageResponse, saveResponse,
+                g_config.gateway.serviceCallTimeoutMs)) {
 
                 auto saved = SendMessageResponsePayload::Deserialize(saveResponse.payload);
                 if (saved.status == 0) {
@@ -143,7 +144,7 @@ void HandleLeaveRoom(ClientContext& ctx, const Frame& frame) {
 void HandleRoomList(ClientContext& ctx, const Frame& frame) {
     Frame roomResponse;
     if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::RoomListRequest, {},
-        MessageType::RoomListResponse, roomResponse)) {
+        MessageType::RoomListResponse, roomResponse, g_config.gateway.serviceCallTimeoutMs)) {
         return;
     }
     SendToSession(ctx.session, MessageType::RoomListResponse, roomResponse.payload);
@@ -152,7 +153,7 @@ void HandleRoomList(ClientContext& ctx, const Frame& frame) {
 void HandleRoomCreate(ClientContext& ctx, const Frame& frame) {
     Frame roomResponse;
     if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::RoomCreateRequest, frame.payload,
-        MessageType::RoomCreateResponse, roomResponse)) {
+        MessageType::RoomCreateResponse, roomResponse, g_config.gateway.serviceCallTimeoutMs)) {
         return;
     }
 
@@ -178,7 +179,7 @@ void HandleRoomCreate(ClientContext& ctx, const Frame& frame) {
 void HandleHistory(ClientContext& ctx, const Frame& frame) {
     Frame historyResponse;
     if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.message.port, MessageType::HistoryRequest, frame.payload,
-        MessageType::HistoryResponse, historyResponse)) {
+        MessageType::HistoryResponse, historyResponse, g_config.gateway.serviceCallTimeoutMs)) {
         return;
     }
     SendToSession(ctx.session, MessageType::HistoryResponse, historyResponse.payload);
@@ -204,7 +205,8 @@ void HandleTextMessage(ClientContext& ctx, const Frame& frame) {
 
     Frame saveResponse;
     if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.message.port, MessageType::SendMessageRequest,
-        saveRequest.Serialize(), MessageType::SendMessageResponse, saveResponse)) {
+        saveRequest.Serialize(), MessageType::SendMessageResponse, saveResponse,
+        g_config.gateway.serviceCallTimeoutMs)) {
         std::cout << "[gateway] message_service unavailable" << std::endl;
         return;
     }
@@ -237,7 +239,7 @@ void ClientThread(socket_t clientSocket) {
     std::cout << "[gateway] Client connected" << std::endl;
 
     // Ставим таймаут на чтение, чтобы recv() не висел вечно на мёртвом соединении
-    SetRecvTimeout(clientSocket, RECV_TIMEOUT_MS);
+    SetRecvTimeout(clientSocket, g_config.gateway.recvTimeoutMs);
 
     auto lastActivity = std::chrono::steady_clock::now();
 
@@ -249,7 +251,7 @@ void ClientThread(socket_t clientSocket) {
             auto idleSeconds = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - lastActivity).count();
 
-            if (idleSeconds >= CLIENT_IDLE_TIMEOUT_SEC) {
+            if (idleSeconds >= g_config.gateway.clientIdleTimeoutSec) {
                 std::cout << "[gateway] Client timed out (userId="
                     << (ctx.session ? ctx.session->userId : 0)
                     << ", idle " << idleSeconds << "s)" << std::endl;

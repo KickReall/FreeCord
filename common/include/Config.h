@@ -8,20 +8,34 @@
 //
 // Файл обязателен: если его нет или он битый — это ошибка деплоя,
 // и сервис должен громко упасть, а не тихо работать на выдуманных дефолтах.
-struct ServiceEndpointConfig {
+struct AuthConfig {
     int port = 0;
     std::string dbPath;
+};
+
+struct RoomConfig {
+    int port = 0;
+    std::string dbPath;
+};
+
+struct MessageConfig {
+    int port = 0;
+    std::string dbPath;
+    int maxTextLength = 0;
 };
 
 struct GatewayConfig {
     int port = 0;
     std::string serviceHost;
+    int recvTimeoutMs = 0;
+    int clientIdleTimeoutSec = 0;
+    int serviceCallTimeoutMs = 0;
 };
 
 struct AppConfig {
-    ServiceEndpointConfig auth;
-    ServiceEndpointConfig room;
-    ServiceEndpointConfig message;
+    AuthConfig auth;
+    RoomConfig room;
+    MessageConfig message;
     GatewayConfig gateway;
 };
 

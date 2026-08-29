@@ -1,4 +1,6 @@
 #include "RoomRepository.h"
+#include "MigrationRunner.h"
+#include "SqlFile.h"
 
 RoomRepository::RoomRepository(const std::string& dbPath)
     : m_db(dbPath, SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE)
@@ -9,33 +11,20 @@ RoomRepository::RoomRepository(const std::string& dbPath)
     m_db.exec("PRAGMA busy_timeout = 5000");
     m_db.exec("PRAGMA foreign_keys = ON");
 
-    m_db.exec(R"(
-        CREATE TABLE IF NOT EXISTS rooms (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL,
-            is_system INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )
-    )");
+    ApplyMigrations(m_db, LoadMigrationsFromDirectory("db/room/migrations"));
 
-    // Системная комната создаётся один раз при первом запуске.
-    // INSERT OR IGNORE: если уже есть — молча ничего не делает.
-    m_db.exec("INSERT OR IGNORE INTO rooms (id, name, is_system) VALUES (1, 'system', 1)");
-
-    m_db.exec(R"(
-        CREATE TABLE IF NOT EXISTS room_members (
-            room_id INTEGER NOT NULL REFERENCES rooms(id),
-            user_id INTEGER NOT NULL,
-            joined_at TEXT NOT NULL DEFAULT (datetime('now')),
-            PRIMARY KEY (room_id, user_id)
-        )
-    )");
+    m_sqlCreateRoom = LoadSqlFile("db/room/queries/create_room.sql");
+    m_sqlRoomExists = LoadSqlFile("db/room/queries/room_exists.sql");
+    m_sqlAddMember = LoadSqlFile("db/room/queries/add_member.sql");
+    m_sqlRemoveMember = LoadSqlFile("db/room/queries/remove_member.sql");
+    m_sqlListRooms = LoadSqlFile("db/room/queries/list_rooms.sql");
+    m_sqlListMembers = LoadSqlFile("db/room/queries/list_members.sql");
 }
 
 int64_t RoomRepository::CreateRoom(const std::string& name) {
     std::lock_guard<std::mutex> lock(m_mutex);
     try {
-        SQLite::Statement query(m_db, "INSERT INTO rooms (name) VALUES (?)");
+        SQLite::Statement query(m_db, m_sqlCreateRoom);
         query.bind(1, name);
         query.exec();
         return m_db.getLastInsertRowid();
@@ -47,7 +36,7 @@ int64_t RoomRepository::CreateRoom(const std::string& name) {
 
 bool RoomRepository::RoomExists(int64_t roomId) {
     std::lock_guard<std::mutex> lock(m_mutex);
-    SQLite::Statement query(m_db, "SELECT 1 FROM rooms WHERE id = ?");
+    SQLite::Statement query(m_db, m_sqlRoomExists);
     query.bind(1, roomId);
     return query.executeStep();
 }
@@ -55,7 +44,7 @@ bool RoomRepository::RoomExists(int64_t roomId) {
 bool RoomRepository::AddMember(int64_t roomId, int64_t userId) {
     std::lock_guard<std::mutex> lock(m_mutex);
     try {
-        SQLite::Statement query(m_db, "INSERT INTO room_members (room_id, user_id) VALUES (?, ?)");
+        SQLite::Statement query(m_db, m_sqlAddMember);
         query.bind(1, roomId);
         query.bind(2, userId);
         query.exec();
@@ -68,7 +57,7 @@ bool RoomRepository::AddMember(int64_t roomId, int64_t userId) {
 
 bool RoomRepository::RemoveMember(int64_t roomId, int64_t userId) {
     std::lock_guard<std::mutex> lock(m_mutex);
-    SQLite::Statement query(m_db, "DELETE FROM room_members WHERE room_id = ? AND user_id = ?");
+    SQLite::Statement query(m_db, m_sqlRemoveMember);
     query.bind(1, roomId);
     query.bind(2, userId);
     return query.exec() > 0; // exec() возвращает число затронутых строк
@@ -77,7 +66,7 @@ bool RoomRepository::RemoveMember(int64_t roomId, int64_t userId) {
 std::vector<RoomRecord> RoomRepository::ListRooms() {
     std::lock_guard<std::mutex> lock(m_mutex);
     std::vector<RoomRecord> result;
-    SQLite::Statement query(m_db, "SELECT id, name FROM rooms ORDER BY id");
+    SQLite::Statement query(m_db, m_sqlListRooms);
     while (query.executeStep()) {
         RoomRecord record;
         record.id = query.getColumn(0).getInt64();
@@ -90,7 +79,7 @@ std::vector<RoomRecord> RoomRepository::ListRooms() {
 std::vector<int64_t> RoomRepository::ListMembers(int64_t roomId) {
     std::lock_guard<std::mutex> lock(m_mutex);
     std::vector<int64_t> result;
-    SQLite::Statement query(m_db, "SELECT user_id FROM room_members WHERE room_id = ? ORDER BY user_id");
+    SQLite::Statement query(m_db, m_sqlListMembers);
     query.bind(1, roomId);
     while (query.executeStep()) {
         result.push_back(query.getColumn(0).getInt64());

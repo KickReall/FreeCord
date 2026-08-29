@@ -1,4 +1,5 @@
 #include <iostream>
+#include <memory>
 
 #include "PlatformSocket.h"
 #include "TcpFramer.h"
@@ -92,7 +93,14 @@ int main() {
         return 1;
     }
 
-    UserRepository repo(config.auth.dbPath);
+    std::unique_ptr<UserRepository> repo;
+    try {
+        repo = std::make_unique<UserRepository>(config.auth.dbPath);
+    }
+    catch (const std::exception& ex) {
+        std::cerr << "[auth] Database error: " << ex.what() << std::endl;
+        return 1;
+    }
     std::cout << "[auth] Database ready at " << config.auth.dbPath << std::endl;
 
     socket_t listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -110,7 +118,7 @@ int main() {
         socket_t clientSocket = accept(listenSocket, nullptr, nullptr);
         if (clientSocket == kInvalidSocket) continue;
         std::cout << "[auth] Client connected" << std::endl;
-        HandleClient(clientSocket, repo);
+        HandleClient(clientSocket, *repo);
     }
 
     CloseSocket(listenSocket);

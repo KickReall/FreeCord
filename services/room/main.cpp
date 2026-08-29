@@ -1,5 +1,6 @@
 #include <iostream>
 #include <thread>
+#include <memory>
 
 #include "PlatformSocket.h"
 #include "TcpFramer.h"
@@ -116,7 +117,14 @@ int main() {
         return 1;
     }
 
-    RoomRepository repo(config.room.dbPath);
+    std::unique_ptr<RoomRepository> repo;
+    try {
+        repo = std::make_unique<RoomRepository>(config.room.dbPath);
+    }
+    catch (const std::exception& ex) {
+        std::cerr << "[room] Database error: " << ex.what() << std::endl;
+        return 1;
+    }
     std::cout << "[room] Database ready at " << config.room.dbPath << std::endl;
 
     socket_t listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -133,7 +141,7 @@ int main() {
     while (true) {
         socket_t clientSocket = accept(listenSocket, nullptr, nullptr);
         if (clientSocket == kInvalidSocket) continue;
-        std::thread(HandleClient, clientSocket, std::ref(repo)).detach();
+        std::thread(HandleClient, clientSocket, std::ref(*repo)).detach();
     }
 
     CloseSocket(listenSocket);

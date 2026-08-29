@@ -30,4 +30,11 @@ public:
 private:
     SQLite::Database m_db;
     std::mutex m_mutex;
+
+    std::string m_sqlCreateRoom;
+    std::string m_sqlRoomExists;
+    std::string m_sqlAddMember;
+    std::string m_sqlRemoveMember;
+    std::string m_sqlListRooms;
+    std::string m_sqlListMembers;
 };

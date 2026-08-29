@@ -19,4 +19,7 @@ public:
 private:
     SQLite::Database m_db;
     std::mutex m_mutex;
+
+    std::string m_sqlSaveMessage;
+    std::string m_sqlGetHistory;
 };

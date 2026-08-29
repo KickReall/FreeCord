@@ -1,4 +1,6 @@
 #include "MessageRepository.h"
+#include "MigrationRunner.h"
+#include "SqlFile.h"
 #include <algorithm>
 
 MessageRepository::MessageRepository(const std::string& dbPath)
@@ -8,27 +10,17 @@ MessageRepository::MessageRepository(const std::string& dbPath)
     m_db.exec("PRAGMA journal_mode = WAL");
     m_db.exec("PRAGMA busy_timeout = 5000");
 
-    m_db.exec(R"(
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            room_id INTEGER NOT NULL,
-            sender_id INTEGER NOT NULL,
-            sender_name TEXT NOT NULL DEFAULT '',
-            text TEXT NOT NULL,
-            timestamp INTEGER NOT NULL
-        )
-    )");
+    ApplyMigrations(m_db, LoadMigrationsFromDirectory("db/message/migrations"));
 
-    // Индекс критичен: без него выборка истории комнаты будет сканировать всю таблицу целиком.
-    m_db.exec("CREATE INDEX IF NOT EXISTS idx_messages_room_time ON messages(room_id, timestamp)");
+    m_sqlSaveMessage = LoadSqlFile("db/message/queries/save_message.sql");
+    m_sqlGetHistory = LoadSqlFile("db/message/queries/get_history.sql");
 }
 
 int64_t MessageRepository::SaveMessage(int64_t roomId, int64_t senderId, const std::string& senderName,
     const std::string& text, int64_t timestamp) {
     std::lock_guard<std::mutex> lock(m_mutex);
     try {
-        SQLite::Statement query(m_db,
-            "INSERT INTO messages (room_id, sender_id, sender_name, text, timestamp) VALUES (?, ?, ?, ?, ?)");
+        SQLite::Statement query(m_db, m_sqlSaveMessage);
         query.bind(1, roomId);
         query.bind(2, senderId);
         query.bind(3, senderName);
@@ -47,9 +39,7 @@ std::vector<ChatMessage> MessageRepository::GetHistory(int64_t roomId, uint32_t 
     std::vector<ChatMessage> result;
 
     // Берём ПОСЛЕДНИЕ limit сообщений — сортируем по убыванию, потом переворачиваем.
-    SQLite::Statement query(m_db,
-        "SELECT id, room_id, sender_id, sender_name, timestamp, text FROM messages "
-        "WHERE room_id = ? ORDER BY timestamp DESC, id DESC LIMIT ?");
+    SQLite::Statement query(m_db, m_sqlGetHistory);
     query.bind(1, roomId);
     query.bind(2, static_cast<int>(limit));
 

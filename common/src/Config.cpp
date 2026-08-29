@@ -25,14 +25,6 @@ namespace {
         return root.at(name);
     }
 
-    ServiceEndpointConfig ParseEndpoint(const json& root, const std::string& name) {
-        const json& section = RequireSection(root, name);
-        ServiceEndpointConfig config;
-        config.port = RequireField<int>(section, name, "port");
-        config.dbPath = RequireField<std::string>(section, name, "dbPath");
-        return config;
-    }
-
 } // namespace
 
 AppConfig LoadConfig(const std::string& path) {
@@ -51,13 +43,26 @@ AppConfig LoadConfig(const std::string& path) {
     }
 
     AppConfig config;
-    config.auth = ParseEndpoint(root, "auth");
-    config.room = ParseEndpoint(root, "room");
-    config.message = ParseEndpoint(root, "message");
+
+    const json& authSection = RequireSection(root, "auth");
+    config.auth.port = RequireField<int>(authSection, "auth", "port");
+    config.auth.dbPath = RequireField<std::string>(authSection, "auth", "dbPath");
+
+    const json& roomSection = RequireSection(root, "room");
+    config.room.port = RequireField<int>(roomSection, "room", "port");
+    config.room.dbPath = RequireField<std::string>(roomSection, "room", "dbPath");
+
+    const json& messageSection = RequireSection(root, "message");
+    config.message.port = RequireField<int>(messageSection, "message", "port");
+    config.message.dbPath = RequireField<std::string>(messageSection, "message", "dbPath");
+    config.message.maxTextLength = RequireField<int>(messageSection, "message", "maxTextLength");
 
     const json& gatewaySection = RequireSection(root, "gateway");
     config.gateway.port = RequireField<int>(gatewaySection, "gateway", "port");
     config.gateway.serviceHost = RequireField<std::string>(gatewaySection, "gateway", "serviceHost");
+    config.gateway.recvTimeoutMs = RequireField<int>(gatewaySection, "gateway", "recvTimeoutMs");
+    config.gateway.clientIdleTimeoutSec = RequireField<int>(gatewaySection, "gateway", "clientIdleTimeoutSec");
+    config.gateway.serviceCallTimeoutMs = RequireField<int>(gatewaySection, "gateway", "serviceCallTimeoutMs");
 
     return config;
 }

@@ -97,7 +97,7 @@ Avalonia кроссплатформенная, поэтому клиент за�
 
 ### Настройка портов и путей к БД
 
-Порты, пути к файлам БД и адрес хоста для внутренних вызовов задаются в `config.json` в корне репозитория. Меняйте именно этот файл (не копию в `build-*/` — она перезаписывается при каждой сборке), затем пересоберите проект.
+Порты, пути к файлам БД, адрес хоста для внутренних вызовов, таймауты и лимит длины сообщения задаются в `config.json` в корне репозитория. SQL-запросы и схемы таблиц — в `db/<сервис>/`. Меняйте файлы в корне репозитория (не копии в `build-*/` — они перезаписываются при каждой сборке), затем пересоберите проект.
 
 ### Если что-то пошло не так
 
@@ -200,7 +200,7 @@ Avalonia is cross-platform, so the client runs the same way on both Windows and 
 
 ### Configuring ports and database paths
 
-Ports, database file paths, and the internal service host are set in `config.json` at the repo root. Edit that file (not the copy under `build-*/` — it gets overwritten on every build), then rebuild.
+Ports, database file paths, the internal service host, timeouts, and the message length limit are set in `config.json` at the repo root. SQL queries and table schemas live under `db/<service>/`. Edit the files at the repo root (not the copies under `build-*/` — those get overwritten on every build), then rebuild.
 
 ### Troubleshooting
 

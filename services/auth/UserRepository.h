@@ -21,4 +21,6 @@ public:
 
 private:
     SQLite::Database m_db;
+    std::string m_sqlCreateUser;
+    std::string m_sqlFindByUsername;
 };
