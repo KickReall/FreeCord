@@ -8,6 +8,9 @@
 struct RoomRecord {
     int64_t id;
     std::string name;
+    // 0 = текстовый, 1 = голосовой (см. RoomType в RoomMessages.h) — задел на
+    // будущее, создание голосовых каналов пока не выставлено наружу.
+    uint8_t type = 0;
 };
 
 struct ChannelOverride {

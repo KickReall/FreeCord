@@ -92,7 +92,9 @@ public sealed class FreeCordConnection : IAsyncDisposable
     public event Action<StatusResponse>? IpUnbanResponseReceived;
     public event Action<UserListResponse>? UserListReceived;
     public event Action<StatusResponse>? BanUserSessionResponseReceived;
+    public event Action<StatusResponse>? DeleteUserResponseReceived;
     public event Action<BroadcastTextMessage>? MessageReceived;
+    public event Action<TypingNotification>? TypingReceived;
     public event Action<UserPresence>? UserJoined;
     public event Action<UserPresence>? UserLeft;
     public event Action? PongReceived;
@@ -331,6 +333,12 @@ public sealed class FreeCordConnection : IAsyncDisposable
             case MessageType.BanUserSessionResponse:
                 BanUserSessionResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
                 break;
+            case MessageType.DeleteUserResponse:
+                DeleteUserResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.TypingBroadcast:
+                TypingReceived?.Invoke(TypingNotification.Deserialize(frame.Payload));
+                break;
         }
     }
 
@@ -355,6 +363,9 @@ public sealed class FreeCordConnection : IAsyncDisposable
 
     public Task SendTextAsync(long roomId, string text) =>
         SendAsync(MessageType.TextMessage, new ClientTextMessage { RoomId = roomId, Text = text }.Serialize());
+
+    public Task TypingAsync(long roomId) =>
+        SendAsync(MessageType.TypingRequest, new TypingRequest { RoomId = roomId }.Serialize());
 
     public Task RequestHistoryAsync(long roomId, uint limit = 50) =>
         SendAsync(MessageType.HistoryRequest, new HistoryRequest { RoomId = roomId, Limit = limit }.Serialize());
@@ -413,6 +424,9 @@ public sealed class FreeCordConnection : IAsyncDisposable
 
     public Task BanUserSessionAsync(long userId) =>
         SendAsync(MessageType.BanUserSessionRequest, new BanUserSessionRequest { UserId = userId }.Serialize());
+
+    public Task DeleteUserAsync(long userId) =>
+        SendAsync(MessageType.DeleteUserRequest, new DeleteUserRequest { UserId = userId }.Serialize());
 
     public async ValueTask DisposeAsync()
     {

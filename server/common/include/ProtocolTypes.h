@@ -29,6 +29,8 @@ enum class MessageType : uint16_t {
     LeaveRoom = 0x0012,  // клиент -> gateway: roomId
 
     TextMessage = 0x0020,  // в обе стороны: roomId, senderId, timestamp, текст
+    TypingRequest = 0x0021,  // клиент -> gateway: roomId — "я печатаю"
+    TypingBroadcast = 0x0022,  // gateway -> остальным в комнате: roomId, senderId, senderName
 
     UserRegistered = 0x0041,  // gateway -> все: зарегистрировался новый пользователь
     UserJoined = 0x0030,  // gateway -> клиент: кто-то зашёл в комнату
@@ -39,7 +41,13 @@ enum class MessageType : uint16_t {
     // "Заблокировать") — composite-обработчик, только gateway; не форвардится как есть
     // в auth, т.к. клиентский payload (userId) не совпадает с внутренним (ip).
     BanUserSessionRequest = 0x0050,  // userId
-    BanUserSessionResponse = 0x0051,  // status: 0 = ok, 1 = не в сети, 254 = нет прав
+    BanUserSessionResponse = 0x0051,  // status: 0 = ok, 1 = не в сети, 2 = это вы сами, 3 = это владелец, 254 = нет прав
+
+    // Удалить аккаунт пользователя целиком (для "пересоздал себе аккаунт, старый не
+    // нужен") + оборвать его активную сессию, если он сейчас онлайн. Необратимо —
+    // history сообщений не трогает (sender_name денормализовано, как и везде).
+    DeleteUserRequest = 0x0052,  // userId
+    DeleteUserResponse = 0x0053,  // status: 0 = ok, 1 = не найден, 2 = это вы сами, 3 = это владелец, 254 = нет прав
 
     Ping = 0x00F0,
     Pong = 0x00F1,

@@ -196,10 +196,14 @@ struct GetUserPermissionsRequestPayload {
 
 // Один пользователь для панели участников — id, имя и список назначенных ролей
 // (клиент сам группирует по ролям, сопоставляя roleIds со списком из RoleListResponse).
+// online заполняет только gateway (см. AnnotateOnlineStatus в gateway/main.cpp) —
+// auth ничего не знает о живых сессиях, у него в БД просто не будет этого понятия;
+// сам auth всегда отдаёт online=false, а gateway перезаписывает поле перед отправкой клиенту.
 struct UserInfo {
     int64_t id = 0;
     std::string username;
     std::vector<int64_t> roleIds;
+    bool online = false;
 };
 
 struct UserListResponsePayload {
@@ -215,6 +219,7 @@ struct UserListResponsePayload {
             for (int64_t roleId : user.roleIds) {
                 WriteScalar(buffer, roleId);
             }
+            WriteScalar(buffer, static_cast<uint8_t>(user.online ? 1 : 0));
         }
         return buffer;
     }
@@ -230,6 +235,7 @@ struct UserListResponsePayload {
             for (uint32_t j = 0; j < roleCount; ++j) {
                 info.roleIds.push_back(ReadScalar<int64_t>(buffer, offset));
             }
+            info.online = ReadScalar<uint8_t>(buffer, offset) != 0;
             r.users.push_back(info);
         }
         return r;

@@ -44,6 +44,10 @@ public:
     int64_t CreateUser(const std::string& username, const std::string& passwordHash, const std::string& passwordSalt);
 
     std::optional<UserRecord> FindByUsername(const std::string& username);
+    // true — пользователь существовал и удалён (каскадом уходят и его user_roles,
+    // см. FK ON DELETE CASCADE в 002_roles.sql). История сообщений не трогается —
+    // sender_name там денормализован, как и при смене ника (см. CLAUDE.md).
+    bool DeleteUser(int64_t userId);
 
     std::vector<RoleRecord> ListRoles();
     // Возвращает id новой роли, либо -1, если имя занято. Пустой displayName —
@@ -71,6 +75,7 @@ private:
     std::mutex m_mutex;
     std::string m_sqlCreateUser;
     std::string m_sqlFindByUsername;
+    std::string m_sqlDeleteUser;
     std::string m_sqlCountUsers;
     std::string m_sqlAssignRole;
     std::string m_sqlListRoles;

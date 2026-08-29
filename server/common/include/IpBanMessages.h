@@ -58,6 +58,25 @@ struct BanUserSessionRequestPayload {
     }
 };
 
+// Действие "Удалить" из панели участников — снести аккаунт пользователя целиком
+// (см. DeleteUserRequest в ProtocolTypes.h). Тот же вид, что у BanUserSessionRequestPayload
+// выше, но отдельным типом — это разные по смыслу действия (бан сессии обратим, удаление нет).
+struct DeleteUserRequestPayload {
+    int64_t userId = 0;
+
+    std::vector<uint8_t> Serialize() const {
+        std::vector<uint8_t> buffer;
+        WriteScalar(buffer, userId);
+        return buffer;
+    }
+    static DeleteUserRequestPayload Deserialize(const std::vector<uint8_t>& buffer) {
+        size_t offset = 0;
+        DeleteUserRequestPayload r;
+        r.userId = ReadScalar<int64_t>(buffer, offset);
+        return r;
+    }
+};
+
 struct IpBanListResponsePayload {
     std::vector<std::string> ips;
 

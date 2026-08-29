@@ -72,9 +72,23 @@ public partial class ServerSessionViewModel : ViewModelBase
 
     [ObservableProperty] private string _newRoomName = "";
     [ObservableProperty] private string _messageText = "";
-    [ObservableProperty] private RoomInfo? _selectedRoom;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasSelectedRoom))]
+    private RoomInfo? _selectedRoom;
+
+    // Поле ввода и кнопка отправки видны, только пока открыта комната — писать
+    // "в никуда" бессмысленно, а раньше поле оставалось видно даже без выбранной комнаты.
+    public bool HasSelectedRoom => SelectedRoom is not null;
 
     public ObservableCollection<RoomInfo> Rooms { get; } = new();
+
+    // Задел на будущее (см. CLAUDE.md, план "Голос и видео") — Rooms остаётся единым
+    // источником правды (используется, например, для дедупликации в RoomCreated),
+    // а эти две коллекции — чисто для отображения списка двумя секциями в UI.
+    public ObservableCollection<RoomInfo> TextRooms { get; } = new();
+    public ObservableCollection<RoomInfo> VoiceRooms { get; } = new();
+
     public ObservableCollection<MessageItem> Messages { get; } = new();
 
     // Панель участников: список ролей (тоже нужен для подменю "Выдать роль")
@@ -85,15 +99,46 @@ public partial class ServerSessionViewModel : ViewModelBase
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanManageRoles))]
     [NotifyPropertyChangedFor(nameof(CanManageServerBans))]
+    [NotifyPropertyChangedFor(nameof(CanManageChannel))]
+    [NotifyPropertyChangedFor(nameof(CanManageUsers))]
     private uint _permissions;
 
     public bool CanManageRoles => (Permissions & (uint)Permission.ManageRoles) != 0;
     public bool CanManageServerBans => (Permissions & (uint)Permission.ManageServerBans) != 0;
+    public bool CanManageChannel => (Permissions & (uint)Permission.ManageChannel) != 0;
+    public bool CanManageUsers => (Permissions & (uint)Permission.ManageUsers) != 0;
 
-    // Диалоги — забота View: открытие окна переименования/выбора роли делает
-    // MainWindow.axaml.cs в ответ на эти события, как и с RenameRequested у серверов.
+    // Permissions может смениться и без перелогина (см. RefreshPermissionsIfOnline на
+    // gateway, после того как кто-то выдал/убрал роль) — но уже построенные MemberViewModel
+    // держат Can*-флаги статичным снимком с момента создания, поэтому без пересборки
+    // контекстное меню оставалось бы с правами, актуальными на момент login, до перезапуска.
+    partial void OnPermissionsChanged(uint value) => RebuildMemberGroups();
+
+    // Показ/скрытие панели участников — чисто клиентское состояние, серверу не известно.
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(MembersToggleGlyph))]
+    private bool _showMembers = true;
+
+    // Стрелка на узкой полоске-разделителе между лентой и панелью участников —
+    // направление подсказывает, что случится по клику (показать/скрыть).
+    public string MembersToggleGlyph => ShowMembers ? "›" : "‹";
+
+    // "X печатает..." под лентой сообщений — сбрасывается при смене комнаты
+    // (OnSelectedRoomChanged) и по таймауту на каждого печатающего отдельно.
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasTypingIndicator))]
+    private string _typingIndicatorText = "";
+    public bool HasTypingIndicator => !string.IsNullOrEmpty(TypingIndicatorText);
+
+    private readonly Dictionary<long, (string Name, DateTime Expiry)> _typingUsers = new();
+    private DateTime _lastTypingSentUtc = DateTime.MinValue;
+
+    // Диалоги — забота View: открытие окна переименования/выбора роли/подтверждения
+    // делает MainWindow.axaml.cs в ответ на эти события, как и с RenameRequested у серверов.
     public event Action<MemberViewModel>? MemberRenameRequested;
     public event Action<MemberViewModel>? MemberAssignRoleRequested;
+    public event Action<MemberViewModel>? MemberRemoveRoleRequested;
+    public event Action<MemberViewModel>? MemberDeleteRequested;
 
     // Инициалы для кружка в левой панели, пока у серверов нет своих иконок
     public string Initials => string.IsNullOrWhiteSpace(DisplayName)
@@ -162,27 +207,58 @@ public partial class ServerSessionViewModel : ViewModelBase
             if (r.IsSuccess) _ = _connection.ListUsersAsync();
         });
 
+        _connection.RoleRemoveResponseReceived += r => OnUi(() =>
+        {
+            Status = r.IsSuccess ? "Роль убрана" : "Не удалось убрать роль";
+            if (r.IsSuccess) _ = _connection.ListUsersAsync();
+        });
+
         _connection.BanUserSessionResponseReceived += r => OnUi(() =>
             Status = r.Status switch
             {
                 0 => "Пользователь заблокирован",
                 1 => "Пользователь сейчас не в сети",
                 2 => "Нельзя заблокировать самого себя",
+                3 => "Нельзя заблокировать владельца сервера",
                 254 => "Недостаточно прав",
                 _ => "Ошибка блокировки"
             });
+
+        // Успех ничего не досылает сам — сервер после удаления рассылает свежий
+        // UserListResponse всем сам (BroadcastUserListToAll на gateway), в том числе инициатору.
+        _connection.DeleteUserResponseReceived += r => OnUi(() =>
+            Status = r.Status switch
+            {
+                0 => "Аккаунт удалён",
+                1 => "Пользователь не найден",
+                2 => "Нельзя удалить самого себя",
+                3 => "Нельзя удалить владельца сервера",
+                254 => "Недостаточно прав",
+                _ => "Ошибка удаления"
+            });
+
+        _connection.TypingReceived += t => OnUi(() =>
+        {
+            if (t.RoomId != SelectedRoom?.Id) return;
+            string name = _nicknames.Get(Host, Port, t.SenderId) ?? t.SenderName;
+            _typingUsers[t.SenderId] = (name, DateTime.UtcNow.AddSeconds(5));
+            RefreshTypingIndicator();
+            _ = Task.Delay(TimeSpan.FromSeconds(5)).ContinueWith(_ => OnUi(RefreshTypingIndicator));
+        });
 
         _connection.RoomCreated += r => OnUi(() =>
         {
             // Защита от дубликата: список мог обновиться другим путём
             if (Rooms.Any(room => room.Id == r.RoomId)) return;
-            Rooms.Add(new RoomInfo(r.RoomId, r.Name));
+            AddRoom(new RoomInfo(r.RoomId, r.Name));
         });
 
         _connection.RoomListReceived += r => OnUi(() =>
         {
             Rooms.Clear();
-            foreach (var room in r.Rooms) Rooms.Add(room);
+            TextRooms.Clear();
+            VoiceRooms.Clear();
+            foreach (var room in r.Rooms) AddRoom(room);
         });
 
         _connection.RoomCreateResponseReceived += r => OnUi(() =>
@@ -204,13 +280,16 @@ public partial class ServerSessionViewModel : ViewModelBase
         {
             Messages.Clear();
             foreach (var m in r.Messages)
-                Messages.Add(new MessageItem(m.SenderName, m.Text, FormatTime(m.Timestamp)));
+                Messages.Add(CreateMessageItem(m.SenderId, m.SenderName, m.Text, m.Timestamp));
         });
 
         _connection.MessageReceived += m => OnUi(() =>
         {
             if (m.RoomId != SelectedRoom?.Id) return;
-            Messages.Add(new MessageItem(m.SenderName, m.Text, FormatTime(m.Timestamp)));
+            Messages.Add(CreateMessageItem(m.SenderId, m.SenderName, m.Text, m.Timestamp));
+            // Сообщение — верный признак того, что печатать перестали, а новый TypingBroadcast
+            // от этого отправителя, если он продолжит, придёт заново.
+            if (_typingUsers.Remove(m.SenderId)) RefreshTypingIndicator();
         });
 
         _connection.Disconnected += ex => OnUi(() =>
@@ -243,27 +322,38 @@ public partial class ServerSessionViewModel : ViewModelBase
     }
 
     // Пересобирает группировку по ролям заново из последних полученных списков.
-    // Пользователь показывается под КАЖДОЙ своей ролью — иерархии ролей в проекте
-    // нет (см. CLAUDE.md), поэтому "основную" роль выделить нечем и незачем.
+    // Пользователь с несколькими ролями показывается только под ОДНОЙ — той, что
+    // даёт больше прав (см. RoleRank) — иначе он дублировался бы в каждой группе,
+    // которой принадлежит хоть одна его роль.
     private void RebuildMemberGroups()
     {
         MemberGroups.Clear();
         if (_rolesRaw.Count == 0 || _usersRaw.Count == 0) return;
 
+        var groupsByRoleId = new Dictionary<long, RoleGroupViewModel>();
+        var withoutRole = new List<UserInfo>();
+
+        foreach (var user in _usersRaw)
+        {
+            var primary = PrimaryRole(user);
+            if (primary is null) { withoutRole.Add(user); continue; }
+
+            if (!groupsByRoleId.TryGetValue(primary.Id, out var group))
+            {
+                group = new RoleGroupViewModel(primary.DisplayName);
+                groupsByRoleId[primary.Id] = group;
+            }
+            group.Members.Add(CreateMemberViewModel(user));
+        }
+
+        // Порядок групп — как в _rolesRaw, чтобы панель не перетасовывалась при каждом обновлении.
         foreach (var role in _rolesRaw)
         {
-            var group = new RoleGroupViewModel(role.DisplayName);
-            foreach (var user in _usersRaw)
-            {
-                if (!user.RoleIds.Contains(role.Id)) continue;
-                group.Members.Add(CreateMemberViewModel(user));
-            }
-            if (group.Members.Count > 0) MemberGroups.Add(group);
+            if (groupsByRoleId.TryGetValue(role.Id, out var group)) MemberGroups.Add(group);
         }
 
         // На практике не бывает — CreateUser всегда назначает admin либо guest —
         // но не полагаемся на это молча, если данные когда-нибудь разойдутся.
-        var withoutRole = _usersRaw.Where(u => u.RoleIds.Count == 0).ToList();
         if (withoutRole.Count > 0)
         {
             var group = new RoleGroupViewModel("Без роли");
@@ -273,12 +363,41 @@ public partial class ServerSessionViewModel : ViewModelBase
         }
     }
 
+    // Роль с наибольшим количеством прав среди тех, что есть у пользователя.
+    // admin и owner хранят permissions=0 (см. Permissions.h на сервере — их сила не
+    // в битовой маске), поэтому ранжируются отдельно, а не через popcount как остальные.
+    private RoleInfo? PrimaryRole(UserInfo user)
+    {
+        RoleInfo? best = null;
+        int bestRank = -1;
+        foreach (var role in _rolesRaw)
+        {
+            if (!user.RoleIds.Contains(role.Id)) continue;
+            int rank = RoleRank(role);
+            if (rank > bestRank) { bestRank = rank; best = role; }
+        }
+        return best;
+    }
+
+    private static int RoleRank(RoleInfo role) => role.Id switch
+    {
+        RoleIds.Owner => int.MaxValue,
+        RoleIds.Admin => int.MaxValue - 1,
+        _ => System.Numerics.BitOperations.PopCount(role.Permissions)
+    };
+
     private MemberViewModel CreateMemberViewModel(UserInfo user) => new(
-        user.Id, user.Username, _nicknames.Get(Host, Port, user.Id),
+        user.Id, user.Username, user.RoleIds, user.Online, _nicknames.Get(Host, Port, user.Id),
         isSelf: user.Id == CurrentUserId,
         canManageRoles: CanManageRoles,
         canManageServerBans: CanManageServerBans,
+        canManageUsers: CanManageUsers,
         block: BlockUser);
+
+    // Локальный никнейм подставляется и здесь же — иначе история чата пока не
+    // переименована показывала бы серверный логин, что и было репортнуто как баг.
+    private MessageItem CreateMessageItem(long senderId, string senderName, string text, long timestamp) =>
+        new(senderId, senderName, text, FormatTime(timestamp)) { LocalNickname = _nicknames.Get(Host, Port, senderId) };
 
     [RelayCommand]
     private void RenameMember(MemberViewModel member) => MemberRenameRequested?.Invoke(member);
@@ -286,7 +405,24 @@ public partial class ServerSessionViewModel : ViewModelBase
     [RelayCommand]
     private void AssignRoleToMember(MemberViewModel member) => MemberAssignRoleRequested?.Invoke(member);
 
-    // Пустая строка сбрасывает локальный никнейм обратно к настоящему имени.
+    [RelayCommand]
+    private void RemoveRoleFromMember(MemberViewModel member) => MemberRemoveRoleRequested?.Invoke(member);
+
+    [RelayCommand]
+    private void DeleteMember(MemberViewModel member) => MemberDeleteRequested?.Invoke(member);
+
+    [RelayCommand]
+    private void ToggleMembers() => ShowMembers = !ShowMembers;
+
+    private void AddRoom(RoomInfo room)
+    {
+        Rooms.Add(room);
+        (room.Type == RoomType.Voice ? VoiceRooms : TextRooms).Add(room);
+    }
+
+    // Пустая строка сбрасывает локальный никнейм обратно к настоящему имени. Обновляет
+    // и уже отрисованную ленту сообщений этого отправителя — раньше никнейм подхватывался
+    // только у новых сообщений, а старые в истории так и оставались с логином.
     public void SetLocalNickname(long userId, string nickname)
     {
         string? stored = string.IsNullOrEmpty(nickname) ? null : nickname;
@@ -294,11 +430,43 @@ public partial class ServerSessionViewModel : ViewModelBase
 
         var member = MemberGroups.SelectMany(g => g.Members).FirstOrDefault(m => m.UserId == userId);
         if (member is not null) member.LocalNickname = stored;
+
+        foreach (var message in Messages.Where(m => m.SenderId == userId))
+            message.LocalNickname = stored;
     }
 
     public Task AssignRoleAsync(long userId, long roleId) => _connection.AssignRoleAsync(userId, roleId);
+    public Task RemoveRoleAsync(long userId, long roleId) => _connection.RemoveRoleAsync(userId, roleId);
+    public Task DeleteUserAsync(long userId) => _connection.DeleteUserAsync(userId);
 
     private void BlockUser(long userId) => _ = _connection.BanUserSessionAsync(userId);
+
+    // Гасит просроченные записи "печатает" и пересобирает строку для отображения.
+    // Планируется заново на каждый входящий TypingBroadcast (см. конструктор) —
+    // отдельного постоянного таймера не заводим, обычного Task.Delay достаточно.
+    private void RefreshTypingIndicator()
+    {
+        var now = DateTime.UtcNow;
+        foreach (var expiredId in _typingUsers.Where(kv => kv.Value.Expiry <= now).Select(kv => kv.Key).ToList())
+            _typingUsers.Remove(expiredId);
+
+        TypingIndicatorText = _typingUsers.Count switch
+        {
+            0 => "",
+            1 => $"{_typingUsers.Values.First().Name} печатает...",
+            _ => $"{string.Join(", ", _typingUsers.Values.Select(v => v.Name))} печатают..."
+        };
+    }
+
+    // Троттлинг: шлём "я печатаю" не чаще раза в 3 секунды, а не на каждую нажатую клавишу.
+    partial void OnMessageTextChanged(string value)
+    {
+        if (string.IsNullOrEmpty(value) || SelectedRoom is null) return;
+        var now = DateTime.UtcNow;
+        if (now - _lastTypingSentUtc < TimeSpan.FromSeconds(3)) return;
+        _lastTypingSentUtc = now;
+        _ = _connection.TypingAsync(SelectedRoom.Id);
+    }
 
     // Вызывается MainWindowViewModel при удалении сервера из рейла —
     // закрывает соединение, чтобы фоновый поток приёма не остался висеть.
@@ -385,6 +553,8 @@ public partial class ServerSessionViewModel : ViewModelBase
     partial void OnSelectedRoomChanged(RoomInfo? value)
     {
         Messages.Clear();
+        _typingUsers.Clear();
+        TypingIndicatorText = "";
 
         if (value is null)
         {
@@ -402,5 +572,27 @@ public partial class ServerSessionViewModel : ViewModelBase
     }
 }
 
-// Одно сообщение в ленте — с автором и временем
-public sealed record MessageItem(string Author, string Text, string Time);
+// Одно сообщение в ленте. LocalNickname — чисто клиентская подмена отображаемого
+// имени отправителя (см. LocalNicknameStore); Author пересчитывается реактивно,
+// поэтому переименование участника задним числом обновляет уже отрисованную историю.
+public sealed partial class MessageItem : ObservableObject
+{
+    public long SenderId { get; }
+    public string SenderName { get; }
+    public string Text { get; }
+    public string Time { get; }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(Author))]
+    private string? _localNickname;
+
+    public string Author => string.IsNullOrEmpty(LocalNickname) ? SenderName : LocalNickname;
+
+    public MessageItem(long senderId, string senderName, string text, string time)
+    {
+        SenderId = senderId;
+        SenderName = senderName;
+        Text = text;
+        Time = time;
+    }
+}

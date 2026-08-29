@@ -84,7 +84,7 @@ public sealed class StatusResponse
     }
 }
 
-public sealed record RoomInfo(long Id, string Name);
+public sealed record RoomInfo(long Id, string Name, RoomType Type = RoomType.Text);
 
 public sealed class RoomListResponse
 {
@@ -99,7 +99,8 @@ public sealed class RoomListResponse
         {
             long id = r.ReadInt64();
             string name = r.ReadString();
-            rooms.Add(new RoomInfo(id, name));
+            var type = (RoomType)r.ReadByte();
+            rooms.Add(new RoomInfo(id, name, type));
         }
         return new RoomListResponse { Rooms = rooms };
     }
@@ -424,8 +425,9 @@ public sealed class IpBanListResponse
     }
 }
 
-/// <summary>Один пользователь для панели участников — группировка по ролям делается на клиенте.</summary>
-public sealed record UserInfo(long Id, string Username, IReadOnlyList<long> RoleIds);
+/// <summary>Один пользователь для панели участников — группировка по ролям делается на клиенте.
+/// Online проставляет только gateway (auth не знает о живых TCP-сессиях).</summary>
+public sealed record UserInfo(long Id, string Username, IReadOnlyList<long> RoleIds, bool Online);
 
 public sealed class UserListResponse
 {
@@ -443,7 +445,8 @@ public sealed class UserListResponse
             uint roleCount = r.ReadUInt32();
             var roleIds = new List<long>((int)roleCount);
             for (uint j = 0; j < roleCount; j++) roleIds.Add(r.ReadInt64());
-            users.Add(new UserInfo(id, username, roleIds));
+            bool online = r.ReadByte() != 0;
+            users.Add(new UserInfo(id, username, roleIds, online));
         }
         return new UserListResponse { Users = users };
     }
@@ -459,6 +462,51 @@ public sealed class BanUserSessionRequest
         using var w = new PayloadWriter();
         w.WriteInt64(UserId);
         return w.ToArray();
+    }
+}
+
+/// <summary>Действие "Удалить" в панели участников — сносит аккаунт пользователя целиком.</summary>
+public sealed class DeleteUserRequest
+{
+    public long UserId { get; set; }
+
+    public byte[] Serialize()
+    {
+        using var w = new PayloadWriter();
+        w.WriteInt64(UserId);
+        return w.ToArray();
+    }
+}
+
+/// <summary>Клиент -> gateway: "я печатаю" в этой комнате.</summary>
+public sealed class TypingRequest
+{
+    public long RoomId { get; set; }
+
+    public byte[] Serialize()
+    {
+        using var w = new PayloadWriter();
+        w.WriteInt64(RoomId);
+        return w.ToArray();
+    }
+}
+
+/// <summary>Gateway -> клиент: кто-то печатает в этой комнате (кроме получателя самого).</summary>
+public sealed class TypingNotification
+{
+    public long RoomId { get; init; }
+    public long SenderId { get; init; }
+    public string SenderName { get; init; } = "";
+
+    public static TypingNotification Deserialize(byte[] data)
+    {
+        using var r = new PayloadReader(data);
+        return new TypingNotification
+        {
+            RoomId = r.ReadInt64(),
+            SenderId = r.ReadInt64(),
+            SenderName = r.ReadString()
+        };
     }
 }
 

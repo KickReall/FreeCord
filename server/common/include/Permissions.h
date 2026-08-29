@@ -14,6 +14,7 @@ enum class Permission : uint32_t {
     KickMembers             = 1u << 7,
     ManageChannelModeration = 1u << 8,  // кик/мьют в рамках канала
     ManageServerBans        = 1u << 9,  // бан по IP на уровне всего сервера
+    ManageUsers             = 1u << 10,  // удаление аккаунта пользователя целиком — необратимо, отдельно от бана (обратимого)
 };
 
 constexpr uint32_t kGuestDefaultPermissions =
@@ -27,3 +28,9 @@ constexpr uint32_t kGuestDefaultPermissions =
 // держать маску admin'а в синхроне при каждом новом добавляемом праве.
 constexpr int64_t kAdminRoleId = 1;
 constexpr int64_t kGuestRoleId = 2;
+// Владелец — первый когда-либо зарегистрированный пользователь. Роль не даёт
+// новых прав (permissions=0, как и у admin — свои полномочия не хранятся маской),
+// а помечает неприкосновенность: gateway отдельно проверяет её наличие у ЦЕЛИ
+// действия и отказывает в кике/муте/бане/смене ролей от кого угодно, кроме него
+// самого, даже если инициатор admin.
+constexpr int64_t kOwnerRoleId = 3;

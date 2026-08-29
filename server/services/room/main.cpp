@@ -65,7 +65,7 @@ void HandleList(socket_t sock, RoomRepository& repo, const Frame& frame) {
     std::cout << "[room] ListRooms" << std::endl;
     RoomListResponsePayload response;
     for (const auto& record : repo.ListRooms()) {
-        response.rooms.push_back(RoomInfo{ record.id, record.name });
+        response.rooms.push_back(RoomInfo{ record.id, record.name, static_cast<RoomType>(record.type) });
     }
     SendFrame(sock, static_cast<uint16_t>(MessageType::RoomListResponse), frame.sequence, response.Serialize());
 }

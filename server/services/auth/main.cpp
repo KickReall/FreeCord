@@ -58,6 +58,14 @@ void HandleLogin(socket_t clientSocket, UserRepository& repo, const Frame& frame
     SendFrame(clientSocket, static_cast<uint16_t>(MessageType::AuthResponse), frame.sequence, response.Serialize());
 }
 
+void HandleDeleteUser(socket_t clientSocket, UserRepository& repo, const Frame& frame) {
+    auto request = DeleteUserRequestPayload::Deserialize(frame.payload);
+    std::cout << "[auth] Delete user id=" << request.userId << std::endl;
+    StatusResponsePayload response;
+    response.status = repo.DeleteUser(request.userId) ? 0 : 1; // 1 = не найден
+    SendFrame(clientSocket, static_cast<uint16_t>(MessageType::DeleteUserResponse), frame.sequence, response.Serialize());
+}
+
 void HandleRoleList(socket_t clientSocket, UserRepository& repo, const Frame& frame) {
     RoleListResponsePayload response;
     for (const auto& role : repo.ListRoles()) {
@@ -179,6 +187,7 @@ void HandleClient(socket_t clientSocket, UserRepository& repo) {
     switch (static_cast<MessageType>(frame.messageType)) {
     case MessageType::RegisterRequest:          HandleRegister(clientSocket, repo, frame); break;
     case MessageType::AuthRequest:              HandleLogin(clientSocket, repo, frame); break;
+    case MessageType::DeleteUserRequest:        HandleDeleteUser(clientSocket, repo, frame); break;
     case MessageType::RoleListRequest:          HandleRoleList(clientSocket, repo, frame); break;
     case MessageType::UserListRequest:          HandleUserList(clientSocket, repo, frame); break;
     case MessageType::RoleCreateRequest:        HandleRoleCreate(clientSocket, repo, frame); break;

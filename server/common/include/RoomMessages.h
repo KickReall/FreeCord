@@ -75,9 +75,15 @@ struct StatusResponsePayload {
     }
 };
 
+// Задел на будущее (см. план "Голос и видео" в CLAUDE.md) — деление каналов на
+// текстовые/голосовые. Пока чисто модель данных: создание голосового канала
+// нигде не выставлено наружу, все существующие комнаты — Text.
+enum class RoomType : uint8_t { Text = 0, Voice = 1 };
+
 struct RoomInfo {
     int64_t id = 0;
     std::string name;
+    RoomType type = RoomType::Text;
 };
 
 struct RoomListResponsePayload {
@@ -89,6 +95,7 @@ struct RoomListResponsePayload {
         for (const auto& room : rooms) {
             WriteScalar(buffer, room.id);
             WriteString(buffer, room.name);
+            WriteScalar(buffer, static_cast<uint8_t>(room.type));
         }
         return buffer;
     }
@@ -100,6 +107,7 @@ struct RoomListResponsePayload {
             RoomInfo info;
             info.id = ReadScalar<int64_t>(buffer, offset);
             info.name = ReadString(buffer, offset);
+            info.type = static_cast<RoomType>(ReadScalar<uint8_t>(buffer, offset));
             r.rooms.push_back(info);
         }
         return r;

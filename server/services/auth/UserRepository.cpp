@@ -12,6 +12,7 @@ UserRepository::UserRepository(const std::string& dbPath)
 
     m_sqlCreateUser = LoadSqlFile("db/auth/queries/create_user.sql");
     m_sqlFindByUsername = LoadSqlFile("db/auth/queries/find_by_username.sql");
+    m_sqlDeleteUser = LoadSqlFile("db/auth/queries/delete_user.sql");
     m_sqlCountUsers = LoadSqlFile("db/auth/queries/count_users.sql");
     m_sqlAssignRole = LoadSqlFile("db/auth/queries/assign_role.sql");
     m_sqlListRoles = LoadSqlFile("db/auth/queries/list_roles.sql");
@@ -50,6 +51,15 @@ int64_t UserRepository::CreateUser(const std::string& username, const std::strin
         assignRole.bind(2, roleId);
         assignRole.exec();
 
+        if (userCount == 1) {
+            // Первый пользователь дополнительно получает owner — не новые права
+            // (admin уже даёт все биты), а неприкосновенность (см. Permissions.h).
+            SQLite::Statement assignOwner(m_db, m_sqlAssignRole);
+            assignOwner.bind(1, userId);
+            assignOwner.bind(2, kOwnerRoleId);
+            assignOwner.exec();
+        }
+
         return userId;
     }
     catch (const SQLite::Exception&) {
@@ -72,6 +82,13 @@ std::optional<UserRecord> UserRepository::FindByUsername(const std::string& user
         return record;
     }
     return std::nullopt;
+}
+
+bool UserRepository::DeleteUser(int64_t userId) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    SQLite::Statement query(m_db, m_sqlDeleteUser);
+    query.bind(1, userId);
+    return query.exec() > 0;
 }
 
 std::vector<RoleRecord> UserRepository::ListRoles() {

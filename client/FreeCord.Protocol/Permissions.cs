@@ -17,11 +17,18 @@ public enum Permission : uint
     KickMembers             = 1u << 7,
     ManageChannelModeration = 1u << 8,
     ManageServerBans        = 1u << 9,
+    ManageUsers             = 1u << 10,
 }
 
-/// <summary>id системных ролей — совпадают с сидом в server/db/auth/migrations/002_roles.sql.</summary>
+/// <summary>id системных ролей — совпадают с сидом в server/db/auth/migrations/002_roles.sql
+/// и server/db/auth/migrations/005_owner_role.sql.</summary>
 public static class RoleIds
 {
     public const long Admin = 1;
     public const long Guest = 2;
+
+    /// <summary>Первый когда-либо зарегистрированный пользователь — неприкосновенен,
+    /// сервер отказывает в кике/муте/бане/смене ролей для него от кого угодно, кроме
+    /// него самого. Не даёт новых прав (permissions=0), только метка.</summary>
+    public const long Owner = 3;
 }

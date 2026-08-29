@@ -13,6 +13,8 @@ public enum MessageType : ushort
 	LeaveRoom = 0x0012,
 
 	TextMessage = 0x0020,
+	TypingRequest = 0x0021,  // клиент -> gateway: roomId — "я печатаю"
+	TypingBroadcast = 0x0022,  // gateway -> остальным в комнате: roomId, senderId, senderName
 
     UserRegistered = 0x0041,
     UserJoined = 0x0030,
@@ -22,6 +24,10 @@ public enum MessageType : ushort
 	// Панель участников, действие "Заблокировать" — банит IP текущей сессии пользователя
 	BanUserSessionRequest = 0x0050,
 	BanUserSessionResponse = 0x0051,
+
+	// Панель участников, действие "Удалить" — сносит аккаунт целиком (необратимо)
+	DeleteUserRequest = 0x0052,
+	DeleteUserResponse = 0x0053,
 
 	Ping = 0x00F0,
 	Pong = 0x00F1,

@@ -13,6 +13,42 @@
         <vm:MainWindowViewModel/>
     </Design.DataContext>
 
+    <Window.Styles>
+        <!-- Общие акценты в духе Discord: скруглённые кнопки, blurple как акцентный
+             цвет действия, мягкая подсветка выбранных/наведённых строк списков. -->
+        <Style Selector="Button">
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="Padding" Value="12,7"/>
+        </Style>
+        <Style Selector="Button.accent">
+            <Setter Property="Background" Value="#5865F2"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+        <Style Selector="Button.accent:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#4752C4"/>
+        </Style>
+        <Style Selector="Button.flat">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+        </Style>
+        <Style Selector="Button.flat:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#3F4147"/>
+        </Style>
+        <Style Selector="TextBox">
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="Background" Value="#1E1F22"/>
+            <Setter Property="BorderThickness" Value="0"/>
+        </Style>
+
+        <Style Selector="TextBlock.sectionHeader">
+            <Setter Property="Foreground" Value="#949BA4"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Margin" Value="4,12,4,4"/>
+        </Style>
+    </Window.Styles>
+
     <Grid ColumnDefinitions="72,*">
 
         <!-- Левая панель — список подключённых серверов -->
@@ -20,9 +56,34 @@
             <Grid RowDefinitions="*,Auto">
                 <ListBox Grid.Row="0" ItemsSource="{Binding Servers}" SelectedItem="{Binding ActiveServer}"
                          Background="Transparent" Margin="0,12,0,0" HorizontalAlignment="Center">
+                    <!-- Стили только для ListBoxItem этого конкретного списка — активный/наведённый
+                         кружок выделяется формой (скругление 24 -> 16) и акцентным цветом. -->
+                    <ListBox.Styles>
+                        <Style Selector="ListBoxItem">
+                            <Setter Property="Background" Value="Transparent"/>
+                            <Setter Property="Padding" Value="0"/>
+                        </Style>
+                        <Style Selector="ListBoxItem Border#ServerAvatar">
+                            <Setter Property="Transitions">
+                                <Transitions>
+                                    <CornerRadiusTransition Property="CornerRadius" Duration="0:0:0.12"/>
+                                </Transitions>
+                            </Setter>
+                        </Style>
+                        <Style Selector="ListBoxItem:selected Border#ServerAvatar">
+                            <Setter Property="CornerRadius" Value="16"/>
+                            <Setter Property="Background" Value="#5865F2"/>
+                        </Style>
+                        <Style Selector="ListBoxItem:pointerover Border#ServerAvatar">
+                            <Setter Property="CornerRadius" Value="16"/>
+                        </Style>
+                        <Style Selector="ListBoxItem:selected /template/ ContentPresenter">
+                            <Setter Property="Background" Value="Transparent"/>
+                        </Style>
+                    </ListBox.Styles>
                     <ListBox.ItemTemplate>
                         <DataTemplate x:DataType="vm:ServerSessionViewModel">
-                            <Border Width="48" Height="48" CornerRadius="24" Background="#313338" Margin="0,4"
+                            <Border x:Name="ServerAvatar" Width="48" Height="48" CornerRadius="24" Background="#313338" Margin="0,4"
                                     ToolTip.Tip="{Binding DisplayName}">
                                 <Border.ContextMenu>
                                     <ContextMenu>
@@ -48,16 +109,17 @@
                     </ListBox.ItemTemplate>
                 </ListBox>
 
-                <Button Grid.Row="1" Content="+" Command="{Binding AddServerCommand}"
+                <Button Grid.Row="1" Classes="flat" Content="+" Command="{Binding AddServerCommand}"
                         Width="48" Height="48" CornerRadius="24" Margin="0,8,0,16"
-                        HorizontalAlignment="Center" FontSize="20" FontWeight="Bold"/>
+                        Background="#313338" Foreground="#3BA55D"
+                        HorizontalAlignment="Center" HorizontalContentAlignment="Center" FontSize="20" FontWeight="Bold"/>
             </Grid>
         </Border>
 
         <!-- Плейсхолдер, пока ни один сервер не выбран/не добавлен -->
         <TextBlock Grid.Column="1" Text="Добавьте сервер через + слева"
                    IsVisible="{Binding !HasActiveServer}"
-                   Foreground="#B5BAC1" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                   Foreground="#949BA4" HorizontalAlignment="Center" VerticalAlignment="Center"/>
 
         <!-- Интерфейс активного сервера -->
         <Grid Grid.Column="1" IsVisible="{Binding HasActiveServer}">
@@ -69,12 +131,12 @@
                         Padding="40" HorizontalAlignment="Center" VerticalAlignment="Center">
                     <StackPanel Spacing="12" Width="300">
                         <TextBlock Text="FreeCord" FontSize="28" FontWeight="Bold"
-                                   Foreground="White" HorizontalAlignment="Center"/>
+                                   Foreground="White" HorizontalAlignment="Center" Margin="0,0,0,8"/>
 
                         <CheckBox Content="Подключиться по инвайт-ссылке" IsChecked="{Binding UseInviteLink}"/>
 
                         <StackPanel IsVisible="{Binding !UseInviteLink}" Spacing="12">
-                            <TextBlock Text="Server" Foreground="#B5BAC1"/>
+                            <TextBlock Text="Server" Foreground="#949BA4"/>
                             <Grid ColumnDefinitions="*,Auto">
                                 <TextBox Grid.Column="0" Text="{Binding Host}" PlaceholderText="host"/>
                                 <TextBox Grid.Column="1" Text="{Binding Port}" Width="70" Margin="6,0,0,0"/>
@@ -82,20 +144,20 @@
                         </StackPanel>
 
                         <StackPanel IsVisible="{Binding UseInviteLink}" Spacing="12">
-                            <TextBlock Text="Инвайт-ссылка" Foreground="#B5BAC1"/>
+                            <TextBlock Text="Инвайт-ссылка" Foreground="#949BA4"/>
                             <TextBox Text="{Binding InviteLinkText}" PlaceholderText="freecord://host:port?fp=..."/>
                         </StackPanel>
 
-                        <TextBlock Text="Название (для рейла слева)" Foreground="#B5BAC1"/>
+                        <TextBlock Text="Название (для рейла слева)" Foreground="#949BA4"/>
                         <TextBox Text="{Binding DisplayName}"/>
 
-                        <TextBlock Text="Username" Foreground="#B5BAC1"/>
+                        <TextBlock Text="Username" Foreground="#949BA4"/>
                         <TextBox Text="{Binding Username}"/>
 
-                        <TextBlock Text="Password" Foreground="#B5BAC1"/>
+                        <TextBlock Text="Password" Foreground="#949BA4"/>
                         <TextBox Text="{Binding Password}" PasswordChar="•"/>
 
-                        <Button Content="Log in" Command="{Binding LoginCommand}"
+                        <Button Classes="accent" Content="Log in" Command="{Binding LoginCommand}"
                                 HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
                         <Button Content="Register" Command="{Binding RegisterCommand}"
                                 HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
@@ -104,49 +166,96 @@
 
                 <!-- Панель чата -->
                 <Grid Grid.Row="0" IsVisible="{Binding IsLoggedIn}"
-                      ColumnDefinitions="220,*,200">
+                      ColumnDefinitions="220,*,Auto,Auto">
 
                     <!-- Список комнат -->
-                    <Border Grid.Column="0" Background="#1E1F22" Padding="8">
+                    <Border Grid.Column="0" Background="#2B2D31">
                         <Grid RowDefinitions="Auto,Auto,*,Auto">
-                            <TextBlock Grid.Row="0" Text="ROOMS" Foreground="#B5BAC1"
-                                       FontSize="11" FontWeight="Bold" Margin="4,4,4,8"/>
+                            <Border Grid.Row="0" Padding="16,14" BorderBrush="#1E1F22" BorderThickness="0,0,0,1">
+                                <TextBlock Text="{Binding DisplayName}" Foreground="White" FontWeight="Bold"
+                                           FontSize="15" TextTrimming="CharacterEllipsis"/>
+                            </Border>
 
-                            <Button Grid.Row="1" Content="Скопировать инвайт-ссылку"
+                            <Button Grid.Row="1" Content="🔗 Скопировать инвайт-ссылку"
                                     Command="{Binding $parent[Window].DataContext.CopyInviteLinkCommand}"
                                     CommandParameter="{Binding}"
                                     HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
-                                    FontSize="11" Margin="0,0,0,8"/>
+                                    FontSize="11" Margin="8,8,8,0"/>
 
-                            <ListBox Grid.Row="2" ItemsSource="{Binding Rooms}"
-                                     SelectedItem="{Binding SelectedRoom}"
-                                     Background="Transparent">
-                                <ListBox.ItemTemplate>
-                                    <DataTemplate>
-                                        <TextBlock Text="{Binding Name}" Foreground="#DBDEE1"/>
-                                    </DataTemplate>
-                                </ListBox.ItemTemplate>
-                            </ListBox>
+                            <ScrollViewer Grid.Row="2" Margin="0,4,0,0">
+                                <StackPanel Margin="8,0,8,0">
+                                    <TextBlock Classes="sectionHeader" Text="ТЕКСТОВЫЕ КАНАЛЫ"/>
+                                    <ListBox ItemsSource="{Binding TextRooms}" SelectedItem="{Binding SelectedRoom}"
+                                             Background="Transparent">
+                                        <ListBox.Styles>
+                                            <Style Selector="ListBoxItem">
+                                                <Setter Property="Background" Value="Transparent"/>
+                                                <Setter Property="CornerRadius" Value="4"/>
+                                                <Setter Property="Padding" Value="8,6"/>
+                                                <Setter Property="Margin" Value="0,1"/>
+                                            </Style>
+                                            <Style Selector="ListBoxItem:selected /template/ ContentPresenter">
+                                                <Setter Property="Background" Value="#3F4147"/>
+                                            </Style>
+                                            <Style Selector="ListBoxItem:pointerover /template/ ContentPresenter">
+                                                <Setter Property="Background" Value="#35373C"/>
+                                            </Style>
+                                        </ListBox.Styles>
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding Name, StringFormat='#  {0}'}" Foreground="#DBDEE1"/>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
 
-                            <Grid Grid.Row="3" ColumnDefinitions="*,Auto" Margin="0,8,0,0">
-                                <TextBox Grid.Column="0" Text="{Binding NewRoomName}" PlaceholderText="new room"/>
-                                <Button Grid.Column="1" Content="+" Margin="4,0,0,0"
+                                    <!-- Пока всегда пусто — задел на будущее (голосовые каналы, план в CLAUDE.md) -->
+                                    <TextBlock Classes="sectionHeader" Text="ГОЛОСОВЫЕ КАНАЛЫ"/>
+                                    <ListBox ItemsSource="{Binding VoiceRooms}" SelectedItem="{Binding SelectedRoom}"
+                                             Background="Transparent">
+                                        <ListBox.Styles>
+                                            <Style Selector="ListBoxItem">
+                                                <Setter Property="Background" Value="Transparent"/>
+                                                <Setter Property="CornerRadius" Value="4"/>
+                                                <Setter Property="Padding" Value="8,6"/>
+                                                <Setter Property="Margin" Value="0,1"/>
+                                            </Style>
+                                            <Style Selector="ListBoxItem:selected /template/ ContentPresenter">
+                                                <Setter Property="Background" Value="#3F4147"/>
+                                            </Style>
+                                            <Style Selector="ListBoxItem:pointerover /template/ ContentPresenter">
+                                                <Setter Property="Background" Value="#35373C"/>
+                                            </Style>
+                                        </ListBox.Styles>
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding Name, StringFormat='🔊  {0}'}" Foreground="#DBDEE1"/>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                </StackPanel>
+                            </ScrollViewer>
+
+                            <Grid Grid.Row="3" ColumnDefinitions="*,Auto" Margin="8,8,8,8"
+                                  IsVisible="{Binding CanManageChannel}">
+                                <TextBox Grid.Column="0" Text="{Binding NewRoomName}" PlaceholderText="новый канал"/>
+                                <Button Grid.Column="1" Classes="accent" Content="+" Margin="4,0,0,0"
                                         Command="{Binding CreateRoomCommand}"/>
                             </Grid>
                         </Grid>
                     </Border>
 
                     <!-- Лента сообщений -->
-                    <Grid Grid.Column="1" RowDefinitions="Auto,*,Auto" Margin="12">
-                        <TextBlock Grid.Row="0" Foreground="White" FontSize="16" FontWeight="Bold"
-                                   Text="{Binding SelectedRoom.Name, FallbackValue='Select a room'}"
-                                   Margin="0,0,0,8"/>
+                    <Grid Grid.Column="1" RowDefinitions="Auto,*,Auto,Auto" Margin="16,12,16,12">
+                        <Border Grid.Row="0" BorderBrush="#1E1F22" BorderThickness="0,0,0,1" Padding="0,0,0,10" Margin="0,0,0,4">
+                            <TextBlock Foreground="White" FontSize="16" FontWeight="Bold"
+                                       Text="{Binding SelectedRoom.Name, StringFormat='#  {0}', FallbackValue='Выберите канал'}"/>
+                        </Border>
 
                         <ScrollViewer Grid.Row="1" Name="MessagesScroll">
                             <ItemsControl ItemsSource="{Binding Messages}">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <Grid ColumnDefinitions="Auto,*,Auto" Margin="0,3">
+                                        <Grid ColumnDefinitions="Auto,*,Auto" Margin="0,5">
                                             <TextBlock Grid.Column="0" Text="{Binding Author}"
                                                        Foreground="#8AB4F8" FontWeight="SemiBold"/>
                                             <TextBlock Grid.Column="1" Text="{Binding Text}"
@@ -159,55 +268,92 @@
                             </ItemsControl>
                         </ScrollViewer>
 
-                        <Grid Grid.Row="2" ColumnDefinitions="*,Auto" Margin="0,8,0,0">
+                        <TextBlock Grid.Row="2" Text="{Binding TypingIndicatorText}"
+                                   Foreground="#8AB4F8" FontSize="12" FontStyle="Italic" Margin="2,4,0,0"
+                                   IsVisible="{Binding HasTypingIndicator}"/>
+
+                        <Grid Grid.Row="3" ColumnDefinitions="*,Auto" Margin="0,8,0,0"
+                              IsVisible="{Binding HasSelectedRoom}">
                             <TextBox Grid.Column="0" Text="{Binding MessageText}"
-                                     PlaceholderText="Type a message...">
+                                     PlaceholderText="Написать сообщение...">
                                 <TextBox.KeyBindings>
                                     <KeyBinding Gesture="Enter" Command="{Binding SendMessageCommand}"/>
                                 </TextBox.KeyBindings>
                             </TextBox>
-                            <Button Grid.Column="1" Content="Send" Margin="6,0,0,0"
+                            <Button Grid.Column="1" Classes="accent" Content="Отправить" Margin="6,0,0,0"
                                     Command="{Binding SendMessageCommand}"/>
                         </Grid>
                     </Grid>
 
-                    <!-- Панель участников — сгруппированы по ролям -->
-                    <Border Grid.Column="2" Background="#1E1F22" Padding="8">
+                    <!-- Узкая полоска-разделитель — всегда видна, даже когда панель участников скрыта,
+                         иначе кнопку показать её обратно негде было бы разместить. -->
+                    <Border Grid.Column="2" Width="18" Background="#2B2D31">
+                        <Button Classes="flat" Command="{Binding ToggleMembersCommand}"
+                                Content="{Binding MembersToggleGlyph}"
+                                Foreground="#949BA4" FontSize="14" FontWeight="Bold"
+                                Padding="0" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                                HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
+                                ToolTip.Tip="Показать/скрыть участников"/>
+                    </Border>
+
+                    <!-- Панель участников — сгруппированы по роли с наибольшими правами -->
+                    <Border Grid.Column="3" Width="200" Background="#2B2D31" Padding="8"
+                            IsVisible="{Binding ShowMembers}">
                         <ScrollViewer>
                             <ItemsControl ItemsSource="{Binding MemberGroups}">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate x:DataType="vm:RoleGroupViewModel">
                                         <StackPanel Margin="0,0,0,12">
-                                            <TextBlock Text="{Binding Header}" Foreground="#B5BAC1"
-                                                       FontSize="11" FontWeight="Bold" Margin="4,0,4,6"/>
+                                            <TextBlock Classes="sectionHeader" Text="{Binding Header}" Margin="4,0,4,6"/>
                                             <ItemsControl ItemsSource="{Binding Members}">
                                                 <ItemsControl.ItemTemplate>
                                                     <DataTemplate x:DataType="vm:MemberViewModel">
-                                                        <Grid ColumnDefinitions="Auto,*" Margin="0,3">
-                                                            <Border Grid.Column="0" Width="24" Height="24"
-                                                                    CornerRadius="12" Background="#313338"
-                                                                    VerticalAlignment="Center"/>
-                                                            <TextBlock Grid.Column="1" Text="{Binding DisplayName}"
-                                                                       Foreground="#DBDEE1" VerticalAlignment="Center"
-                                                                       Margin="8,0,0,0"/>
-                                                            <Grid.ContextMenu>
-                                                                <ContextMenu>
-                                                                    <MenuItem Header="Это вы" IsEnabled="False"
-                                                                              IsVisible="{Binding IsSelf}"/>
-                                                                    <MenuItem Header="Переименовать (локально)"
-                                                                              Command="{Binding $parent[Window].DataContext.ActiveServer.RenameMemberCommand}"
-                                                                              CommandParameter="{Binding}"
-                                                                              IsVisible="{Binding !IsSelf}"/>
-                                                                    <MenuItem Header="Выдать роль"
-                                                                              Command="{Binding $parent[Window].DataContext.ActiveServer.AssignRoleToMemberCommand}"
-                                                                              CommandParameter="{Binding}"
-                                                                              IsVisible="{Binding CanAssignRole}"/>
-                                                                    <MenuItem Header="Заблокировать"
-                                                                              Command="{Binding BlockCommand}"
-                                                                              IsVisible="{Binding CanBlock}"/>
-                                                                </ContextMenu>
-                                                            </Grid.ContextMenu>
-                                                        </Grid>
+                                                        <Border CornerRadius="4" Padding="4,4" Background="Transparent">
+                                                            <Border.Styles>
+                                                                <Style Selector="Border:pointerover">
+                                                                    <Setter Property="Background" Value="#35373C"/>
+                                                                </Style>
+                                                            </Border.Styles>
+                                                            <Grid ColumnDefinitions="Auto,*">
+                                                                <Grid Grid.Column="0" Width="24" Height="24" VerticalAlignment="Center">
+                                                                    <Border CornerRadius="12" Background="#313338"/>
+                                                                    <Ellipse Width="9" Height="9" Stroke="#2B2D31" StrokeThickness="2"
+                                                                             HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                                                                             Fill="{Binding PresenceBrush}"/>
+                                                                </Grid>
+                                                                <TextBlock Grid.Column="1" Text="{Binding DisplayName}"
+                                                                           Foreground="#DBDEE1" VerticalAlignment="Center"
+                                                                           Margin="8,0,0,0" TextTrimming="CharacterEllipsis"/>
+                                                                <Grid.ContextMenu>
+                                                                    <ContextMenu>
+                                                                        <MenuItem Header="Это вы" IsEnabled="False"
+                                                                                  IsVisible="{Binding IsSelf}"/>
+                                                                        <MenuItem Header="Владелец сервера" IsEnabled="False"
+                                                                                  IsVisible="{Binding IsOwner}"/>
+                                                                        <MenuItem Header="Переименовать (локально)"
+                                                                                  Command="{Binding $parent[Window].DataContext.ActiveServer.RenameMemberCommand}"
+                                                                                  CommandParameter="{Binding}"
+                                                                                  IsVisible="{Binding !IsSelf}"/>
+                                                                        <MenuItem Header="Выдать роль"
+                                                                                  Command="{Binding $parent[Window].DataContext.ActiveServer.AssignRoleToMemberCommand}"
+                                                                                  CommandParameter="{Binding}"
+                                                                                  IsVisible="{Binding CanManageRoles}"/>
+                                                                        <MenuItem Header="Убрать роль"
+                                                                                  Command="{Binding $parent[Window].DataContext.ActiveServer.RemoveRoleFromMemberCommand}"
+                                                                                  CommandParameter="{Binding}"
+                                                                                  IsVisible="{Binding CanManageRoles}"/>
+                                                                        <MenuItem Header="Заблокировать"
+                                                                                  Command="{Binding BlockCommand}"
+                                                                                  IsVisible="{Binding CanBlock}"/>
+                                                                        <Separator IsVisible="{Binding CanDelete}"/>
+                                                                        <MenuItem Header="Удалить"
+                                                                                  Command="{Binding $parent[Window].DataContext.ActiveServer.DeleteMemberCommand}"
+                                                                                  CommandParameter="{Binding}"
+                                                                                  IsVisible="{Binding CanDelete}"/>
+                                                                    </ContextMenu>
+                                                                </Grid.ContextMenu>
+                                                            </Grid>
+                                                        </Border>
                                                     </DataTemplate>
                                                 </ItemsControl.ItemTemplate>
                                             </ItemsControl>
@@ -220,8 +366,8 @@
                 </Grid>
 
                 <!-- Статусная строка -->
-                <Border Grid.Row="1" Background="#1E1F22" Padding="8,4">
-                    <TextBlock Text="{Binding Status}" Foreground="#B5BAC1" FontSize="12"/>
+                <Border Grid.Row="1" Background="#1E1F22" Padding="12,6">
+                    <TextBlock Text="{Binding Status}" Foreground="#949BA4" FontSize="12"/>
                 </Border>
             </Grid>
         </Grid>

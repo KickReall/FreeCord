@@ -80,6 +80,7 @@ std::vector<RoomRecord> RoomRepository::ListRooms() {
         RoomRecord record;
         record.id = query.getColumn(0).getInt64();
         record.name = query.getColumn(1).getString();
+        record.type = static_cast<uint8_t>(query.getColumn(2).getInt());
         result.push_back(record);
     }
     return result;
