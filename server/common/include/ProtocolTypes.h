@@ -59,4 +59,22 @@ enum class MessageType : uint16_t {
     SendMessageResponse = 0x3001,  // message -> gateway: status + messageId + timestamp
     HistoryRequest = 0x3002,  // gateway -> message: roomId, limit
     HistoryResponse = 0x3003,  // message -> gateway: список сообщений
+
+    // --- Роли: те же значения используются и клиент->gateway, и gateway->auth
+    // (как для Room/Message) — gateway просто форвардит payload как есть ---
+    RoleListRequest = 0x4000,  // (пусто) — все роли
+    RoleListResponse = 0x4001,
+    RoleCreateRequest = 0x4002,  // name, permissions
+    RoleCreateResponse = 0x4003,  // status + roleId
+    RoleUpdateRequest = 0x4004,  // roleId, name, permissions
+    RoleUpdateResponse = 0x4005,  // status
+    RoleDeleteRequest = 0x4006,  // roleId
+    RoleDeleteResponse = 0x4007,  // status
+    RoleAssignRequest = 0x4008,  // userId, roleId
+    RoleAssignResponse = 0x4009,  // status
+    RoleRemoveRequest = 0x400A,  // userId, roleId
+    RoleRemoveResponse = 0x400B,  // status
+    GetUserPermissionsRequest = 0x400C,  // internal only, gateway -> auth: userId
+    GetUserPermissionsResponse = 0x400D,  // internal only, auth -> gateway: permissions
+    MyPermissions = 0x400E,  // gateway -> клиент, отправляется сразу после успешного логина
 };

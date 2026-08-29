@@ -1,6 +1,8 @@
 #pragma once
 #include <string>
 #include <optional>
+#include <vector>
+#include <cstdint>
 #include <SQLiteCpp/SQLiteCpp.h>
 
 struct UserRecord {
@@ -9,6 +11,15 @@ struct UserRecord {
     std::string passwordHash;
     std::string passwordSalt;
 };
+
+struct RoleRecord {
+    int64_t id;
+    std::string name;
+    bool isSystem;
+    uint32_t permissions;
+};
+
+enum class RoleOpResult { Ok, NotFound, SystemRole, NameTaken };
 
 class UserRepository {
 public:
@@ -19,8 +30,28 @@ public:
 
     std::optional<UserRecord> FindByUsername(const std::string& username);
 
+    std::vector<RoleRecord> ListRoles();
+    // Возвращает id новой роли, либо -1, если имя занято.
+    int64_t CreateRole(const std::string& name, uint32_t permissions);
+    RoleOpResult UpdateRole(int64_t roleId, const std::string& name, uint32_t permissions);
+    RoleOpResult DeleteRole(int64_t roleId);
+    // false — роль уже была назначена / не была назначена
+    bool AssignRole(int64_t userId, int64_t roleId);
+    bool RemoveRole(int64_t userId, int64_t roleId);
+    // Объединение прав всех ролей пользователя; admin — особый случай (см. Permissions.h)
+    uint32_t GetUserPermissions(int64_t userId);
+
 private:
     SQLite::Database m_db;
     std::string m_sqlCreateUser;
     std::string m_sqlFindByUsername;
+    std::string m_sqlCountUsers;
+    std::string m_sqlAssignRole;
+    std::string m_sqlListRoles;
+    std::string m_sqlCreateRole;
+    std::string m_sqlFindRoleById;
+    std::string m_sqlUpdateRole;
+    std::string m_sqlDeleteRole;
+    std::string m_sqlRemoveRole;
+    std::string m_sqlGetUserRolePermissions;
 };

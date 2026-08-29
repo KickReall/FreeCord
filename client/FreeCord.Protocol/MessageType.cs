@@ -32,4 +32,19 @@ public enum MessageType : ushort
 
 	HistoryRequest = 0x3002,
 	HistoryResponse = 0x3003,
+
+	// Роли: то же значение используется и клиент->gateway, и gateway->auth
+	RoleListRequest = 0x4000,
+	RoleListResponse = 0x4001,
+	RoleCreateRequest = 0x4002,
+	RoleCreateResponse = 0x4003,
+	RoleUpdateRequest = 0x4004,
+	RoleUpdateResponse = 0x4005,
+	RoleDeleteRequest = 0x4006,
+	RoleDeleteResponse = 0x4007,
+	RoleAssignRequest = 0x4008,
+	RoleAssignResponse = 0x4009,
+	RoleRemoveRequest = 0x400A,
+	RoleRemoveResponse = 0x400B,
+	MyPermissions = 0x400E,  // gateway -> клиент, сразу после успешного логина
 }

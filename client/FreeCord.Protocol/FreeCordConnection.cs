@@ -44,6 +44,13 @@ public sealed class FreeCordConnection : IAsyncDisposable
     public event Action<StatusResponse>? JoinResponseReceived;
     public event Action<StatusResponse>? LeaveResponseReceived;
     public event Action<HistoryResponse>? HistoryReceived;
+    public event Action<RoleListResponse>? RoleListReceived;
+    public event Action<RoleCreateResponse>? RoleCreateResponseReceived;
+    public event Action<StatusResponse>? RoleUpdateResponseReceived;
+    public event Action<StatusResponse>? RoleDeleteResponseReceived;
+    public event Action<StatusResponse>? RoleAssignResponseReceived;
+    public event Action<StatusResponse>? RoleRemoveResponseReceived;
+    public event Action<MyPermissions>? MyPermissionsReceived;
     public event Action<BroadcastTextMessage>? MessageReceived;
     public event Action<UserPresence>? UserJoined;
     public event Action<UserPresence>? UserLeft;
@@ -222,6 +229,27 @@ public sealed class FreeCordConnection : IAsyncDisposable
             case MessageType.Pong:
                 PongReceived?.Invoke();
                 break;
+            case MessageType.RoleListResponse:
+                RoleListReceived?.Invoke(RoleListResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.RoleCreateResponse:
+                RoleCreateResponseReceived?.Invoke(RoleCreateResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.RoleUpdateResponse:
+                RoleUpdateResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.RoleDeleteResponse:
+                RoleDeleteResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.RoleAssignResponse:
+                RoleAssignResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.RoleRemoveResponse:
+                RoleRemoveResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.MyPermissions:
+                MyPermissionsReceived?.Invoke(MyPermissions.Deserialize(frame.Payload));
+                break;
         }
     }
 
@@ -251,6 +279,23 @@ public sealed class FreeCordConnection : IAsyncDisposable
         SendAsync(MessageType.HistoryRequest, new HistoryRequest { RoomId = roomId, Limit = limit }.Serialize());
 
     public Task PingAsync() => SendAsync(MessageType.Ping);
+
+    public Task ListRolesAsync() => SendAsync(MessageType.RoleListRequest);
+
+    public Task CreateRoleAsync(string name, uint permissions) =>
+        SendAsync(MessageType.RoleCreateRequest, new RoleCreateRequest { Name = name, Permissions = permissions }.Serialize());
+
+    public Task UpdateRoleAsync(long roleId, string name, uint permissions) =>
+        SendAsync(MessageType.RoleUpdateRequest, new RoleUpdateRequest { RoleId = roleId, Name = name, Permissions = permissions }.Serialize());
+
+    public Task DeleteRoleAsync(long roleId) =>
+        SendAsync(MessageType.RoleDeleteRequest, new RoleDeleteRequest { RoleId = roleId }.Serialize());
+
+    public Task AssignRoleAsync(long userId, long roleId) =>
+        SendAsync(MessageType.RoleAssignRequest, new RoleMembershipRequest { UserId = userId, RoleId = roleId }.Serialize());
+
+    public Task RemoveRoleAsync(long userId, long roleId) =>
+        SendAsync(MessageType.RoleRemoveRequest, new RoleMembershipRequest { UserId = userId, RoleId = roleId }.Serialize());
 
     public async ValueTask DisposeAsync()
     {

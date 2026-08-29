@@ -211,6 +211,107 @@ public sealed class RoomCreatedNotification
     }
 }
 
+public sealed record RoleInfo(long Id, string Name, bool IsSystem, uint Permissions);
+
+public sealed class RoleListResponse
+{
+    public IReadOnlyList<RoleInfo> Roles { get; init; } = Array.Empty<RoleInfo>();
+
+    public static RoleListResponse Deserialize(byte[] data)
+    {
+        using var r = new PayloadReader(data);
+        uint count = r.ReadUInt32();
+        var roles = new List<RoleInfo>((int)count);
+        for (uint i = 0; i < count; i++)
+        {
+            roles.Add(new RoleInfo(r.ReadInt64(), r.ReadString(), r.ReadByte() != 0, r.ReadUInt32()));
+        }
+        return new RoleListResponse { Roles = roles };
+    }
+}
+
+public sealed class RoleCreateRequest
+{
+    public string Name { get; set; } = "";
+    public uint Permissions { get; set; }
+
+    public byte[] Serialize()
+    {
+        using var w = new PayloadWriter();
+        w.WriteString(Name);
+        w.WriteUInt32(Permissions);
+        return w.ToArray();
+    }
+}
+
+public sealed class RoleCreateResponse
+{
+    public byte Status { get; init; }  // 0 = ok, 1 = имя занято, 254 = недостаточно прав
+    public long RoleId { get; init; }
+    public bool IsSuccess => Status == 0;
+
+    public static RoleCreateResponse Deserialize(byte[] data)
+    {
+        using var r = new PayloadReader(data);
+        return new RoleCreateResponse { Status = r.ReadByte(), RoleId = r.ReadInt64() };
+    }
+}
+
+public sealed class RoleUpdateRequest
+{
+    public long RoleId { get; set; }
+    public string Name { get; set; } = "";
+    public uint Permissions { get; set; }
+
+    public byte[] Serialize()
+    {
+        using var w = new PayloadWriter();
+        w.WriteInt64(RoleId);
+        w.WriteString(Name);
+        w.WriteUInt32(Permissions);
+        return w.ToArray();
+    }
+}
+
+public sealed class RoleDeleteRequest
+{
+    public long RoleId { get; set; }
+
+    public byte[] Serialize()
+    {
+        using var w = new PayloadWriter();
+        w.WriteInt64(RoleId);
+        return w.ToArray();
+    }
+}
+
+/// <summary>Общий payload для Assign и Remove — набор полей одинаковый.</summary>
+public sealed class RoleMembershipRequest
+{
+    public long UserId { get; set; }
+    public long RoleId { get; set; }
+
+    public byte[] Serialize()
+    {
+        using var w = new PayloadWriter();
+        w.WriteInt64(UserId);
+        w.WriteInt64(RoleId);
+        return w.ToArray();
+    }
+}
+
+/// <summary>Эффективные права пользователя — приходит от gateway сразу после успешного логина.</summary>
+public sealed class MyPermissions
+{
+    public uint Permissions { get; init; }
+
+    public static MyPermissions Deserialize(byte[] data)
+    {
+        using var r = new PayloadReader(data);
+        return new MyPermissions { Permissions = r.ReadUInt32() };
+    }
+}
+
 public sealed class UserRegisteredNotification
 {
     public long UserId { get; init; }

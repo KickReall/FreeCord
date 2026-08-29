@@ -12,6 +12,8 @@
 #include "RoomMessages.h"
 #include "MessageMessages.h"
 #include "ChatMessages.h"
+#include "RoleMessages.h"
+#include "Permissions.h"
 #include "ServiceClient.h"
 #include "SessionManager.h"
 #include "Config.h"
@@ -34,6 +36,10 @@ struct ClientContext {
 bool SendToSession(const SessionPtr& session, MessageType type, const std::vector<uint8_t>& payload) {
     std::lock_guard<std::mutex> lock(session->sendMutex);
     return SendFrame(*session->transport, static_cast<uint16_t>(type), 0, payload) == FrameResult::Ok;
+}
+
+bool HasPermission(const SessionPtr& session, Permission permission) {
+    return (session->permissions.load() & static_cast<uint32_t>(permission)) != 0;
 }
 
 // Разослать всем залогиненным клиентам, независимо от комнат.
@@ -79,6 +85,19 @@ void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
             response.sessionId = ctx.session->sessionId;
             std::cout << "[gateway] '" << request.username << "' logged in (userId="
                 << response.userId << "), online=" << g_sessions.OnlineCount() << std::endl;
+
+            // Права считаются один раз при логине и кэшируются в сессии — изменение
+            // ролей применится только после повторного логина (см. Session::permissions).
+            Frame permResponse;
+            GetUserPermissionsRequestPayload permRequest;
+            permRequest.userId = response.userId;
+            if (CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, MessageType::GetUserPermissionsRequest,
+                permRequest.Serialize(), MessageType::GetUserPermissionsResponse, permResponse,
+                g_config.gateway.serviceCallTimeoutMs)) {
+                auto perms = MyPermissionsPayload::Deserialize(permResponse.payload);
+                ctx.session->permissions.store(perms.permissions);
+                SendToSession(ctx.session, MessageType::MyPermissions, perms.Serialize());
+            }
         }
 
         // Новый пользователь — пишем в системную комнату и уведомляем всех
@@ -238,6 +257,91 @@ void HandleTextMessage(ClientContext& ctx, const Frame& frame) {
         << "' delivered to " << delivered << " online users" << std::endl;
 }
 
+// Список ролей виден любому залогиненному пользователю — сама по себе не секрет.
+void HandleRoleList(ClientContext& ctx, const Frame& frame) {
+    Frame roleResponse;
+    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, MessageType::RoleListRequest, {},
+        MessageType::RoleListResponse, roleResponse, g_config.gateway.serviceCallTimeoutMs)) {
+        return;
+    }
+    SendToSession(ctx.session, MessageType::RoleListResponse, roleResponse.payload);
+}
+
+void HandleRoleCreate(ClientContext& ctx, const Frame& frame) {
+    if (!HasPermission(ctx.session, Permission::ManageRoles)) {
+        RoleCreateResponsePayload forbidden;
+        forbidden.status = 254;
+        SendToSession(ctx.session, MessageType::RoleCreateResponse, forbidden.Serialize());
+        return;
+    }
+    Frame roleResponse;
+    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, MessageType::RoleCreateRequest, frame.payload,
+        MessageType::RoleCreateResponse, roleResponse, g_config.gateway.serviceCallTimeoutMs)) {
+        return;
+    }
+    SendToSession(ctx.session, MessageType::RoleCreateResponse, roleResponse.payload);
+}
+
+void HandleRoleUpdate(ClientContext& ctx, const Frame& frame) {
+    if (!HasPermission(ctx.session, Permission::ManageRoles)) {
+        StatusResponsePayload forbidden;
+        forbidden.status = 254;
+        SendToSession(ctx.session, MessageType::RoleUpdateResponse, forbidden.Serialize());
+        return;
+    }
+    Frame roleResponse;
+    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, MessageType::RoleUpdateRequest, frame.payload,
+        MessageType::RoleUpdateResponse, roleResponse, g_config.gateway.serviceCallTimeoutMs)) {
+        return;
+    }
+    SendToSession(ctx.session, MessageType::RoleUpdateResponse, roleResponse.payload);
+}
+
+void HandleRoleDelete(ClientContext& ctx, const Frame& frame) {
+    if (!HasPermission(ctx.session, Permission::ManageRoles)) {
+        StatusResponsePayload forbidden;
+        forbidden.status = 254;
+        SendToSession(ctx.session, MessageType::RoleDeleteResponse, forbidden.Serialize());
+        return;
+    }
+    Frame roleResponse;
+    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, MessageType::RoleDeleteRequest, frame.payload,
+        MessageType::RoleDeleteResponse, roleResponse, g_config.gateway.serviceCallTimeoutMs)) {
+        return;
+    }
+    SendToSession(ctx.session, MessageType::RoleDeleteResponse, roleResponse.payload);
+}
+
+void HandleRoleAssign(ClientContext& ctx, const Frame& frame) {
+    if (!HasPermission(ctx.session, Permission::ManageRoles)) {
+        StatusResponsePayload forbidden;
+        forbidden.status = 254;
+        SendToSession(ctx.session, MessageType::RoleAssignResponse, forbidden.Serialize());
+        return;
+    }
+    Frame roleResponse;
+    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, MessageType::RoleAssignRequest, frame.payload,
+        MessageType::RoleAssignResponse, roleResponse, g_config.gateway.serviceCallTimeoutMs)) {
+        return;
+    }
+    SendToSession(ctx.session, MessageType::RoleAssignResponse, roleResponse.payload);
+}
+
+void HandleRoleRemove(ClientContext& ctx, const Frame& frame) {
+    if (!HasPermission(ctx.session, Permission::ManageRoles)) {
+        StatusResponsePayload forbidden;
+        forbidden.status = 254;
+        SendToSession(ctx.session, MessageType::RoleRemoveResponse, forbidden.Serialize());
+        return;
+    }
+    Frame roleResponse;
+    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, MessageType::RoleRemoveRequest, frame.payload,
+        MessageType::RoleRemoveResponse, roleResponse, g_config.gateway.serviceCallTimeoutMs)) {
+        return;
+    }
+    SendToSession(ctx.session, MessageType::RoleRemoveResponse, roleResponse.payload);
+}
+
 void ClientThread(socket_t clientSocket) {
     ClientContext ctx;
     ctx.socket = clientSocket;
@@ -301,6 +405,12 @@ void ClientThread(socket_t clientSocket) {
         case MessageType::LeaveRoom:         HandleLeaveRoom(ctx, frame);   break;
         case MessageType::HistoryRequest:    HandleHistory(ctx, frame);     break;
         case MessageType::TextMessage:       HandleTextMessage(ctx, frame); break;
+        case MessageType::RoleListRequest:   HandleRoleList(ctx, frame);    break;
+        case MessageType::RoleCreateRequest: HandleRoleCreate(ctx, frame);  break;
+        case MessageType::RoleUpdateRequest: HandleRoleUpdate(ctx, frame);  break;
+        case MessageType::RoleDeleteRequest: HandleRoleDelete(ctx, frame);  break;
+        case MessageType::RoleAssignRequest: HandleRoleAssign(ctx, frame);  break;
+        case MessageType::RoleRemoveRequest: HandleRoleRemove(ctx, frame);  break;
         case MessageType::Ping:
             // Отвечаем только залогиненным — до логина сессии ещё нет
             if (ctx.session) SendToSession(ctx.session, MessageType::Pong, frame.payload);

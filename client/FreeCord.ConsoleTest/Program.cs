@@ -39,6 +39,21 @@ connection.UserLeft += p => Console.WriteLine($"\n  <room {p.RoomId}> {p.Usernam
 connection.PongReceived += () => Console.WriteLine("\n  [+] Pong");
 connection.Disconnected += ex => Console.WriteLine($"\n  [!] Disconnected: {ex?.Message ?? "closed"}");
 
+connection.MyPermissionsReceived += p => Console.WriteLine($"\n  [+] My permissions bitmask: {p.Permissions}");
+connection.RoleListReceived += r =>
+{
+    Console.WriteLine("\n  --- roles ---");
+    foreach (var role in r.Roles)
+        Console.WriteLine($"  [{role.Id}] {role.Name}{(role.IsSystem ? " (system)" : "")} permissions={role.Permissions}");
+};
+connection.RoleCreateResponseReceived += r => Console.WriteLine(r.IsSuccess
+    ? $"\n  [+] Role created, roleId={r.RoleId}"
+    : $"\n  [!] Role create failed, status={r.Status}");
+connection.RoleUpdateResponseReceived += r => Console.WriteLine(r.IsSuccess ? "\n  [+] OK" : $"\n  [!] Failed, status={r.Status}");
+connection.RoleDeleteResponseReceived += r => Console.WriteLine(r.IsSuccess ? "\n  [+] OK" : $"\n  [!] Failed, status={r.Status}");
+connection.RoleAssignResponseReceived += r => Console.WriteLine(r.IsSuccess ? "\n  [+] OK" : $"\n  [!] Failed, status={r.Status}");
+connection.RoleRemoveResponseReceived += r => Console.WriteLine(r.IsSuccess ? "\n  [+] OK" : $"\n  [!] Failed, status={r.Status}");
+
 static string Describe(byte status) => status switch
 {
     0 => "OK",
@@ -63,6 +78,7 @@ while (true)
     Console.WriteLine("\n=== FreeCord (C#) ===");
     Console.WriteLine("1-Register  2-Login  3-Create room  4-List rooms");
     Console.WriteLine("5-Join  6-Leave  7-Send message  8-History  9-Ping  0-Exit");
+    Console.WriteLine("10-List roles  11-Create role  12-Update role  13-Delete role  14-Assign role  15-Remove role");
     Console.Write("> ");
 
     var input = Console.ReadLine();
@@ -114,6 +130,48 @@ while (true)
 
         case "9":
             await connection.PingAsync();
+            break;
+
+        case "10":
+            await connection.ListRolesAsync();
+            break;
+
+        case "11":
+            Console.Write("  Role name: "); var roleName = Console.ReadLine() ?? "";
+            Console.Write("  Permissions (bitmask): ");
+            uint.TryParse(Console.ReadLine(), out var createPerms);
+            await connection.CreateRoleAsync(roleName, createPerms);
+            break;
+
+        case "12":
+            Console.Write("  Role id: ");
+            if (long.TryParse(Console.ReadLine(), out var updateRoleId))
+            {
+                Console.Write("  New name: "); var newName = Console.ReadLine() ?? "";
+                Console.Write("  New permissions (bitmask): ");
+                uint.TryParse(Console.ReadLine(), out var newPerms);
+                await connection.UpdateRoleAsync(updateRoleId, newName, newPerms);
+            }
+            break;
+
+        case "13":
+            Console.Write("  Role id: ");
+            if (long.TryParse(Console.ReadLine(), out var deleteRoleId))
+                await connection.DeleteRoleAsync(deleteRoleId);
+            break;
+
+        case "14":
+        case "15":
+            Console.Write("  User id: ");
+            if (long.TryParse(Console.ReadLine(), out var membershipUserId))
+            {
+                Console.Write("  Role id: ");
+                if (long.TryParse(Console.ReadLine(), out var membershipRoleId))
+                {
+                    if (input == "14") await connection.AssignRoleAsync(membershipUserId, membershipRoleId);
+                    else await connection.RemoveRoleAsync(membershipUserId, membershipRoleId);
+                }
+            }
             break;
     }
 

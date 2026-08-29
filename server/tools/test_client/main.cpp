@@ -13,6 +13,7 @@
 #include "RoomMessages.h"
 #include "MessageMessages.h"
 #include "ChatMessages.h"
+#include "RoleMessages.h"
 
 constexpr const char* GATEWAY_HOST = "127.0.0.1";
 constexpr int GATEWAY_PORT = 6000;
@@ -91,6 +92,35 @@ void HandleFrame(const Frame& frame) {
     case MessageType::Pong:
         std::cout << "\n  [+] Pong" << std::endl;
         break;
+    case MessageType::MyPermissions: {
+        auto p = MyPermissionsPayload::Deserialize(frame.payload);
+        std::cout << "\n  [+] My permissions bitmask: " << p.permissions << std::endl;
+        break;
+    }
+    case MessageType::RoleListResponse: {
+        auto p = RoleListResponsePayload::Deserialize(frame.payload);
+        std::cout << "\n  --- roles ---" << std::endl;
+        for (const auto& r : p.roles) {
+            std::cout << "  [" << r.id << "] " << r.name
+                << (r.isSystem ? " (system)" : "") << " permissions=" << r.permissions << std::endl;
+        }
+        break;
+    }
+    case MessageType::RoleCreateResponse: {
+        auto p = RoleCreateResponsePayload::Deserialize(frame.payload);
+        std::cout << "\n  " << (p.status == 0
+            ? "[+] Role created, roleId=" + std::to_string(p.roleId)
+            : "[!] Role create failed, status=" + std::to_string(p.status)) << std::endl;
+        break;
+    }
+    case MessageType::RoleUpdateResponse:
+    case MessageType::RoleDeleteResponse:
+    case MessageType::RoleAssignResponse:
+    case MessageType::RoleRemoveResponse: {
+        auto p = StatusResponsePayload::Deserialize(frame.payload);
+        std::cout << "\n  " << (p.status == 0 ? "[+] OK" : "[!] Failed, status=" + std::to_string(p.status)) << std::endl;
+        break;
+    }
     case MessageType::UserJoined:
     case MessageType::UserLeft: {
         auto p = UserPresencePayload::Deserialize(frame.payload);
@@ -158,6 +188,34 @@ void DoHistory() {
     Send(MessageType::HistoryRequest, p.Serialize());
 }
 
+void DoCreateRole() {
+    RoleCreateRequestPayload p;
+    std::cout << "  Role name: "; std::cin >> p.name;
+    std::cout << "  Permissions (bitmask, e.g. 7): "; std::cin >> p.permissions;
+    Send(MessageType::RoleCreateRequest, p.Serialize());
+}
+
+void DoUpdateRole() {
+    RoleUpdateRequestPayload p;
+    std::cout << "  Role id: "; std::cin >> p.roleId;
+    std::cout << "  New name: "; std::cin >> p.name;
+    std::cout << "  New permissions (bitmask): "; std::cin >> p.permissions;
+    Send(MessageType::RoleUpdateRequest, p.Serialize());
+}
+
+void DoDeleteRole() {
+    RoleDeleteRequestPayload p;
+    std::cout << "  Role id: "; std::cin >> p.roleId;
+    Send(MessageType::RoleDeleteRequest, p.Serialize());
+}
+
+void DoRoleMembership(bool isAssign) {
+    RoleMembershipRequestPayload p;
+    std::cout << "  User id: "; std::cin >> p.userId;
+    std::cout << "  Role id: "; std::cin >> p.roleId;
+    Send(isAssign ? MessageType::RoleAssignRequest : MessageType::RoleRemoveRequest, p.Serialize());
+}
+
 int main() {
     SocketLibraryGuard socketLibrary;
     if (!socketLibrary.IsInitialized()) {
@@ -194,6 +252,7 @@ int main() {
             << (g_userId == 0 ? "(not logged in)" : std::to_string(g_userId)) << std::endl;
         std::cout << "1-Register  2-Login  3-Create room  4-List rooms" << std::endl;
         std::cout << "5-Join  6-Leave  7-Send message  8-History  9-Ping  0-Exit" << std::endl;
+        std::cout << "10-List roles  11-Create role  12-Update role  13-Delete role  14-Assign role  15-Remove role" << std::endl;
         std::cout << "> ";
 
         int choice = 0;
@@ -210,6 +269,12 @@ int main() {
         case 7: DoSendMessage();    break;
         case 8: DoHistory();        break;
         case 9: Send(MessageType::Ping, {}); break;
+        case 10: Send(MessageType::RoleListRequest, {}); break;
+        case 11: DoCreateRole();          break;
+        case 12: DoUpdateRole();          break;
+        case 13: DoDeleteRole();          break;
+        case 14: DoRoleMembership(true);  break;
+        case 15: DoRoleMembership(false); break;
         default: std::cout << "  Unknown option" << std::endl; break;
         }
 
