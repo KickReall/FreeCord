@@ -82,9 +82,10 @@ TCP передаёт **поток байт**, а не сообщения, поэ
 ## Технологический стек
 
 **Сервер**
-- C++20, Winsock2
+- C++20, кроссплатформенный слой над Winsock2/BSD sockets (Windows и Linux)
 - SQLite через SQLiteCpp
 - OpenSSL (хеширование паролей)
+- nlohmann-json (конфигурация)
 - CMake + vcpkg
 
 **Клиент**
@@ -99,13 +100,19 @@ TCP передаёт **поток байт**, а не сообщения, поэ
 
 ```
 FreeCord/
+├── config.json                Порты, пути к БД, адреса хостов — общий для всех сервисов
+├── build-windows.ps1          Автосборка под Windows (dev)
+├── build-linux.sh             Автосборка под Linux (dev)
+├── run-windows.ps1            Запуск всех сервисов с общим выводом (dev)
+├── run-linux.sh               То же для Linux (dev)
 ├── common/                    Общий код сервера
 │   ├── include/
 │   │   ├── ProtocolTypes.h    ControlHeader, перечень типов сообщений
 │   │   ├── Serialization.h    Чтение и запись строк и чисел
 │   │   ├── TcpFramer.h        Кадрирование поверх TCP
 │   │   ├── ServiceClient.h    Вызов внутреннего сервиса
-│   │   ├── WinsockGuard.h     RAII-обёртка над WSAStartup/WSACleanup
+│   │   ├── PlatformSocket.h   Слой абстракции над Winsock2/BSD sockets
+│   │   ├── Config.h           Чтение config.json
 │   │   └── *Messages.h        Структуры полезной нагрузки
 │   └── src/
 ├── services/
@@ -126,56 +133,35 @@ FreeCord/
 
 ## Сборка и запуск
 
-### Требования
-
-- Visual Studio 2022 с компонентом «Разработка классических приложений на C++»
-- CMake 3.20+
-- vcpkg
-- .NET SDK 8.0+
-
-### Зависимости
+Сервер собирается и запускается одинаково на Windows и Linux — по паре команд, без ручной настройки CMake:
 
 ```powershell
-cd C:\vcpkg
-.\vcpkg install sqlite3:x64-windows
-.\vcpkg install sqlitecpp:x64-windows
-.\vcpkg install openssl:x64-windows
+# Windows
+.\build-windows.ps1
+.\run-windows.ps1
 ```
 
-### Сервер
-
-```powershell
-mkdir build && cd build
-cmake .. -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
-cmake --build .
+```bash
+# Linux (в т.ч. WSL2)
+./build-linux.sh
+./run-linux.sh
 ```
 
-Запустите все четыре сервиса, каждый в своём окне:
+Клиент:
 
-```powershell
-.\services\auth\Debug\auth_service.exe
-.\services\room\Debug\room_service.exe
-.\services\message\Debug\message_service.exe
-.\services\gateway\Debug\gateway_service.exe
-```
-
-Базы данных создаются автоматически при первом запуске.
-
-### Клиент
-
-```powershell
-cd client\FreeCord.Desktop
+```bash
+cd client/FreeCord.Desktop
 dotnet run
 ```
 
-Адрес сервера указывается прямо в окне входа — по умолчанию `127.0.0.1:6000`.
+Полная инструкция с требованиями, установкой vcpkg с нуля и разбором типичных ошибок — в [BUILDING.md](BUILDING.md) (на русском и английском).
 
 ---
 
 ## Планы
 
-- [ ] **Портирование сервера на Linux** — сейчас код завязан на Winsock2, требуется слой абстракции над сокетами
-- [ ] **JSON-конфигурация** — порты, пути к БД и адреса вместо констант в коде
+- [x] **Портирование сервера на Linux** — слой абстракции над сокетами, собирается и работает на Windows и Linux
+- [x] **JSON-конфигурация** — порты, пути к БД и адреса вместо констант в коде
 - [ ] **Система миграций БД** — сейчас таблицы создаются через `CREATE TABLE IF NOT EXISTS` при старте сервиса, а изменение схемы требует удаления файла базы. Планируется таблица `schema_version` и последовательное применение SQL-файлов, чтобы схему можно было менять на работающем сервере без потери данных
 - [ ] **TLS** — шифрование соединений (обязательное для клиента, опциональное между сервисами), самоподписанный сертификат с проверкой по отпечатку
 - [ ] **Установщик для сервера** — скрипт развёртывания, systemd-юниты, автозапуск
