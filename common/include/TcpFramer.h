@@ -1,7 +1,7 @@
 #pragma once
 #include <vector>
 #include <cstdint>
-#include <winsock2.h>
+#include "PlatformSocket.h"
 #include "ProtocolTypes.h"
 
 enum class FrameResult {
@@ -18,7 +18,7 @@ struct Frame {
 };
 
 // Отправляет один кадр (заголовок + payload) целиком. Блокирующий вызов.
-FrameResult SendFrame(SOCKET socket, uint16_t messageType, uint32_t sequence, const std::vector<uint8_t>& payload);
+FrameResult SendFrame(socket_t socket, uint16_t messageType, uint32_t sequence, const std::vector<uint8_t>& payload);
 
 // Читает один кадр целиком. Блокирует, пока не придёт весь кадр, либо не оборвётся соединение/ошибка.
-FrameResult ReceiveFrame(SOCKET socket, Frame& outFrame);
+FrameResult ReceiveFrame(socket_t socket, Frame& outFrame);

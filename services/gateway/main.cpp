@@ -1,10 +1,8 @@
 #include <iostream>
 #include <thread>
-#include <winsock2.h>
-#include <ws2tcpip.h>
 #include <chrono>
 
-#include "WinsockGuard.h"
+#include "PlatformSocket.h"
 #include "TcpFramer.h"
 #include "ProtocolTypes.h"
 #include "AuthMessages.h"
@@ -26,7 +24,7 @@ constexpr int CLIENT_IDLE_TIMEOUT_SEC = 45;  // после этого счита
 SessionManager g_sessions;
 
 struct ClientContext {
-    SOCKET socket = INVALID_SOCKET;
+    socket_t socket = kInvalidSocket;
     SessionPtr session;   // nullptr, пока не залогинен
 };
 
@@ -236,15 +234,13 @@ void HandleTextMessage(ClientContext& ctx, const Frame& frame) {
         << "' delivered to " << delivered << " online users" << std::endl;
 }
 
-void ClientThread(SOCKET clientSocket) {
+void ClientThread(socket_t clientSocket) {
     ClientContext ctx;
     ctx.socket = clientSocket;
     std::cout << "[gateway] Client connected" << std::endl;
 
     // Ставим таймаут на чтение, чтобы recv() не висел вечно на мёртвом соединении
-    DWORD timeout = RECV_TIMEOUT_MS;
-    setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO,
-        reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+    SetRecvTimeout(clientSocket, RECV_TIMEOUT_MS);
 
     auto lastActivity = std::chrono::steady_clock::now();
 
@@ -308,23 +304,23 @@ void ClientThread(SOCKET clientSocket) {
         g_sessions.RemoveSession(ctx.session->sessionId);
         std::cout << "[gateway] Session closed, online=" << g_sessions.OnlineCount() << std::endl;
     }
-    closesocket(ctx.socket);
+    CloseSocket(ctx.socket);
 }
 
 int main() {
-    WinsockGuard winsock;
-    if (!winsock.IsInitialized()) {
-        std::cerr << "[gateway] Failed to initialize Winsock" << std::endl;
+    SocketLibraryGuard socketLibrary;
+    if (!socketLibrary.IsInitialized()) {
+        std::cerr << "[gateway] Failed to initialize socket library" << std::endl;
         return 1;
     }
 
-    SOCKET listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    socket_t listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     sockaddr_in serverAddr{};
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_addr.s_addr = INADDR_ANY;
     serverAddr.sin_port = htons(GATEWAY_PORT);
 
-    if (bind(listenSocket, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr)) == SOCKET_ERROR) {
+    if (bind(listenSocket, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr)) == -1) {
         std::cerr << "[gateway] Bind failed" << std::endl;
         return 1;
     }
@@ -333,8 +329,8 @@ int main() {
     std::cout << "[gateway] Listening on port " << GATEWAY_PORT << std::endl;
 
     while (true) {
-        SOCKET clientSocket = accept(listenSocket, nullptr, nullptr);
-        if (clientSocket == INVALID_SOCKET) continue;
+        socket_t clientSocket = accept(listenSocket, nullptr, nullptr);
+        if (clientSocket == kInvalidSocket) continue;
         std::thread(ClientThread, clientSocket).detach();
     }
 

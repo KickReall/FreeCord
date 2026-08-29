@@ -3,10 +3,8 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
-#include <winsock2.h>
-#include <ws2tcpip.h>
 
-#include "WinsockGuard.h"
+#include "PlatformSocket.h"
 #include "TcpFramer.h"
 #include "ProtocolTypes.h"
 #include "AuthMessages.h"
@@ -17,7 +15,7 @@
 constexpr const char* GATEWAY_HOST = "127.0.0.1";
 constexpr int GATEWAY_PORT = 6000;
 
-SOCKET g_socket = INVALID_SOCKET;
+socket_t g_socket = kInvalidSocket;
 std::mutex g_sendMutex;          // клиент тоже пишет из разных мест — защищаем отправку
 std::atomic<bool> g_running{ true };
 std::atomic<int64_t> g_userId{ 0 };
@@ -158,9 +156,9 @@ void DoHistory() {
 }
 
 int main() {
-    WinsockGuard winsock;
-    if (!winsock.IsInitialized()) {
-        std::cerr << "[client] Winsock init failed" << std::endl;
+    SocketLibraryGuard socketLibrary;
+    if (!socketLibrary.IsInitialized()) {
+        std::cerr << "[client] Socket library init failed" << std::endl;
         return 1;
     }
 
@@ -170,7 +168,7 @@ int main() {
     addr.sin_port = htons(GATEWAY_PORT);
     inet_pton(AF_INET, GATEWAY_HOST, &addr.sin_addr);
 
-    if (connect(g_socket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
+    if (connect(g_socket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == -1) {
         std::cerr << "[client] Cannot connect to gateway on port " << GATEWAY_PORT << std::endl;
         return 1;
     }
@@ -207,7 +205,7 @@ int main() {
     }
 
     g_running = false;
-    closesocket(g_socket);
+    CloseSocket(g_socket);
     receiver.join();
     std::cout << "[client] Bye" << std::endl;
     return 0;

@@ -1,6 +1,6 @@
 #include "SessionManager.h"
 
-SessionPtr SessionManager::AddSession(int64_t userId, const std::string& username, SOCKET socket) {
+SessionPtr SessionManager::AddSession(int64_t userId, const std::string& username, socket_t socket) {
     std::lock_guard<std::mutex> lock(m_mutex);
 
     auto existing = m_userToSession.find(userId);

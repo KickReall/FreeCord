@@ -2,13 +2,21 @@
 
 namespace {
 
+#ifdef _WIN32
+    constexpr int kSendFlags = 0;
+#else
+    // Без этого флага разрыв соединения посреди send() убивает процесс сигналом SIGPIPE —
+    // на Windows такого сигнала не существует, поэтому там он не нужен.
+    constexpr int kSendFlags = MSG_NOSIGNAL;
+#endif
+
     // Гарантированно отправляет ровно `size` байт — send() может отправить меньше за один вызов.
-    bool SendAll(SOCKET socket, const uint8_t* data, size_t size) {
+    bool SendAll(socket_t socket, const uint8_t* data, size_t size) {
         size_t totalSent = 0;
         while (totalSent < size) {
             int sent = send(socket, reinterpret_cast<const char*>(data + totalSent),
-                static_cast<int>(size - totalSent), 0);
-            if (sent == SOCKET_ERROR) {
+                static_cast<int>(size - totalSent), kSendFlags);
+            if (sent == -1) {
                 return false;
             }
             totalSent += static_cast<size_t>(sent);
@@ -19,7 +27,7 @@ namespace {
     // Гарантированно читает ровно `size` байт.
     // Timeout возвращается ТОЛЬКО если не успели прочитать ни одного байта —
     // иначе кадр пришёл частично, и бросать его на полпути нельзя.
-    FrameResult RecvAll(SOCKET socket, uint8_t* data, size_t size) {
+    FrameResult RecvAll(socket_t socket, uint8_t* data, size_t size) {
         size_t totalReceived = 0;
         while (totalReceived < size) {
             int received = recv(socket, reinterpret_cast<char*>(data + totalReceived),
@@ -27,9 +35,9 @@ namespace {
             if (received == 0) {
                 return FrameResult::ConnectionClosed;
             }
-            if (received == SOCKET_ERROR) {
-                int error = WSAGetLastError();
-                if (error == WSAETIMEDOUT) {
+            if (received == -1) {
+                int error = GetLastSocketError();
+                if (IsTimeoutError(error)) {
                     // Тишина в начале кадра — нормальная ситуация, сообщаем наверх.
                     // Тишина в середине кадра — продолжаем ждать остаток.
                     if (totalReceived == 0) return FrameResult::Timeout;
@@ -44,7 +52,7 @@ namespace {
 
 } // namespace
 
-FrameResult SendFrame(SOCKET socket, uint16_t messageType, uint32_t sequence, const std::vector<uint8_t>& payload) {
+FrameResult SendFrame(socket_t socket, uint16_t messageType, uint32_t sequence, const std::vector<uint8_t>& payload) {
     ControlHeader header{};
     header.length = static_cast<uint32_t>(payload.size());
     header.messageType = messageType;
@@ -59,7 +67,7 @@ FrameResult SendFrame(SOCKET socket, uint16_t messageType, uint32_t sequence, co
     return FrameResult::Ok;
 }
 
-FrameResult ReceiveFrame(SOCKET socket, Frame& outFrame) {
+FrameResult ReceiveFrame(socket_t socket, Frame& outFrame) {
     ControlHeader header{};
     FrameResult headerResult = RecvAll(socket, reinterpret_cast<uint8_t*>(&header), sizeof(header));
     if (headerResult != FrameResult::Ok) {

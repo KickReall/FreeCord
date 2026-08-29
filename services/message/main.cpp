@@ -1,10 +1,8 @@
 #include <iostream>
 #include <chrono>
-#include <winsock2.h>
-#include <ws2tcpip.h>
 #include <thread>
 
-#include "WinsockGuard.h"
+#include "PlatformSocket.h"
 #include "TcpFramer.h"
 #include "ProtocolTypes.h"
 #include "MessageMessages.h"
@@ -19,7 +17,7 @@ int64_t CurrentUnixTime() {
         std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
-void HandleSend(SOCKET sock, MessageRepository& repo, const Frame& frame) {
+void HandleSend(socket_t sock, MessageRepository& repo, const Frame& frame) {
     auto request = SendMessageRequestPayload::Deserialize(frame.payload);
 
     SendMessageResponsePayload response;
@@ -53,7 +51,7 @@ void HandleSend(SOCKET sock, MessageRepository& repo, const Frame& frame) {
     SendFrame(sock, static_cast<uint16_t>(MessageType::SendMessageResponse), frame.sequence, response.Serialize());
 }
 
-void HandleHistory(SOCKET sock, MessageRepository& repo, const Frame& frame) {
+void HandleHistory(socket_t sock, MessageRepository& repo, const Frame& frame) {
     auto request = HistoryRequestPayload::Deserialize(frame.payload);
     std::cout << "[message] History roomId=" << request.roomId << " limit=" << request.limit << std::endl;
 
@@ -63,11 +61,11 @@ void HandleHistory(SOCKET sock, MessageRepository& repo, const Frame& frame) {
     SendFrame(sock, static_cast<uint16_t>(MessageType::HistoryResponse), frame.sequence, response.Serialize());
 }
 
-void HandleClient(SOCKET sock, MessageRepository& repo) {
+void HandleClient(socket_t sock, MessageRepository& repo) {
     Frame frame;
     if (ReceiveFrame(sock, frame) != FrameResult::Ok) {
         std::cout << "[message] Failed to receive frame" << std::endl;
-        closesocket(sock);
+        CloseSocket(sock);
         return;
     }
 
@@ -79,20 +77,20 @@ void HandleClient(SOCKET sock, MessageRepository& repo) {
         break;
     }
 
-    closesocket(sock);
+    CloseSocket(sock);
 }
 
 int main() {
-    WinsockGuard winsock;
-    if (!winsock.IsInitialized()) {
-        std::cerr << "[message] Failed to initialize Winsock" << std::endl;
+    SocketLibraryGuard socketLibrary;
+    if (!socketLibrary.IsInitialized()) {
+        std::cerr << "[message] Failed to initialize socket library" << std::endl;
         return 1;
     }
 
     MessageRepository repo(DB_PATH);
     std::cout << "[message] Database ready at " << DB_PATH << std::endl;
 
-    SOCKET listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    socket_t listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     sockaddr_in serverAddr{};
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_addr.s_addr = INADDR_ANY;
@@ -104,11 +102,11 @@ int main() {
     std::cout << "[message] Listening on port " << MESSAGE_SERVICE_PORT << std::endl;
 
     while (true) {
-        SOCKET clientSocket = accept(listenSocket, nullptr, nullptr);
-        if (clientSocket == INVALID_SOCKET) continue;
+        socket_t clientSocket = accept(listenSocket, nullptr, nullptr);
+        if (clientSocket == kInvalidSocket) continue;
         std::thread(HandleClient, clientSocket, std::ref(repo)).detach();
     }
 
-    closesocket(listenSocket);
+    CloseSocket(listenSocket);
     return 0;
 }

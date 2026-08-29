@@ -1,8 +1,6 @@
 #include <iostream>
-#include <winsock2.h>
-#include <ws2tcpip.h>
 
-#include "WinsockGuard.h"
+#include "PlatformSocket.h"
 #include "TcpFramer.h"
 #include "ProtocolTypes.h"
 #include "AuthMessages.h"
@@ -12,7 +10,7 @@
 constexpr int AUTH_SERVICE_PORT = 6001;
 constexpr const char* DB_PATH = "freecord_auth.db";
 
-void HandleRegister(SOCKET clientSocket, UserRepository& repo, const Frame& frame) {
+void HandleRegister(socket_t clientSocket, UserRepository& repo, const Frame& frame) {
     AuthRequestPayload request = AuthRequestPayload::Deserialize(frame.payload);
     std::cout << "[auth] RegisterRequest username=" << request.username << std::endl;
 
@@ -36,7 +34,7 @@ void HandleRegister(SOCKET clientSocket, UserRepository& repo, const Frame& fram
     SendFrame(clientSocket, static_cast<uint16_t>(MessageType::RegisterResponse), frame.sequence, response.Serialize());
 }
 
-void HandleLogin(SOCKET clientSocket, UserRepository& repo, const Frame& frame) {
+void HandleLogin(socket_t clientSocket, UserRepository& repo, const Frame& frame) {
     AuthRequestPayload request = AuthRequestPayload::Deserialize(frame.payload);
     std::cout << "[auth] AuthRequest username=" << request.username << std::endl;
 
@@ -57,13 +55,13 @@ void HandleLogin(SOCKET clientSocket, UserRepository& repo, const Frame& frame) 
     SendFrame(clientSocket, static_cast<uint16_t>(MessageType::AuthResponse), frame.sequence, response.Serialize());
 }
 
-void HandleClient(SOCKET clientSocket, UserRepository& repo) {
+void HandleClient(socket_t clientSocket, UserRepository& repo) {
     Frame frame;
     FrameResult result = ReceiveFrame(clientSocket, frame);
 
     if (result != FrameResult::Ok) {
         std::cout << "[auth] Failed to receive frame" << std::endl;
-        closesocket(clientSocket);
+        CloseSocket(clientSocket);
         return;
     }
 
@@ -77,20 +75,20 @@ void HandleClient(SOCKET clientSocket, UserRepository& repo) {
         std::cout << "[auth] Unexpected messageType: " << frame.messageType << std::endl;
     }
 
-    closesocket(clientSocket);
+    CloseSocket(clientSocket);
 }
 
 int main() {
-    WinsockGuard winsock;
-    if (!winsock.IsInitialized()) {
-        std::cerr << "[auth] Failed to initialize Winsock" << std::endl;
+    SocketLibraryGuard socketLibrary;
+    if (!socketLibrary.IsInitialized()) {
+        std::cerr << "[auth] Failed to initialize socket library" << std::endl;
         return 1;
     }
 
     UserRepository repo(DB_PATH);
     std::cout << "[auth] Database ready at " << DB_PATH << std::endl;
 
-    SOCKET listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    socket_t listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     sockaddr_in serverAddr{};
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_addr.s_addr = INADDR_ANY;
@@ -102,12 +100,12 @@ int main() {
     std::cout << "[auth] Listening on port " << AUTH_SERVICE_PORT << std::endl;
 
     while (true) {
-        SOCKET clientSocket = accept(listenSocket, nullptr, nullptr);
-        if (clientSocket == INVALID_SOCKET) continue;
+        socket_t clientSocket = accept(listenSocket, nullptr, nullptr);
+        if (clientSocket == kInvalidSocket) continue;
         std::cout << "[auth] Client connected" << std::endl;
         HandleClient(clientSocket, repo);
     }
 
-    closesocket(listenSocket);
+    CloseSocket(listenSocket);
     return 0;
 }
