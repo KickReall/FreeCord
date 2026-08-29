@@ -9,60 +9,62 @@ Self-hosted мессенджер (аналог Discord). Сервер — мик
 ## Структура
 
 ```
-config.json                Порты, пути к БД, лимиты, таймауты — общий для всех сервисов
-db/                        SQL вне кода: миграции и запросы, по сервисам
-  auth/migrations/001_initial.sql, queries/*.sql
-  room/migrations/001_initial.sql, queries/*.sql
-  message/migrations/001_initial.sql, queries/*.sql
-build-windows.ps1          Автосборка под Windows (dev)
-build-linux.sh             Автосборка под Linux (dev)
-run-windows.ps1            Запуск всех сервисов с общим выводом (dev)
-run-linux.sh               То же для Linux (dev)
-common/                  Общий код сервера (статическая библиотека)
-  include/
-    ProtocolTypes.h      ControlHeader + enum MessageType
-    Serialization.h      WriteString/ReadString, WriteScalar/ReadScalar
-    TcpFramer.h/.cpp     Кадрирование поверх TCP
-    ServiceClient.h      CallService — вызов внутреннего сервиса
-    PlatformSocket.h/.cpp  Слой абстракции над Winsock2/BSD sockets
-    Config.h/.cpp        LoadConfig — чтение config.json (nlohmann::json)
-    SqlFile.h/.cpp       LoadSqlFile — чтение одного .sql-файла в строку
-    MigrationRunner.h/.cpp  LoadMigrationsFromDirectory + ApplyMigrations (PRAGMA user_version)
-    *Messages.h          Структуры payload по доменам
-services/
-  gateway/               Порт 6000. Точка входа, сессии, fanout. Своей БД нет
-  auth/                  Порт 6001. Регистрация/логин, PBKDF2. freecord_auth.db
-  room/                  Порт 6002. Комнаты. freecord_rooms.db
-  message/               Порт 6003. Сообщения и история. freecord_messages.db
+server/                    Всё серверное — C++, отдельно от client/
+  config.json              Порты, пути к БД, лимиты, таймауты — общий для всех сервисов
+  db/                      SQL вне кода: миграции и запросы, по сервисам
+    auth/migrations/001_initial.sql, queries/*.sql
+    room/migrations/001_initial.sql, queries/*.sql
+    message/migrations/001_initial.sql, queries/*.sql
+  build-windows.ps1        Автосборка под Windows (dev)
+  build-linux.sh           Автосборка под Linux (dev)
+  run-windows.ps1          Запуск всех сервисов с общим выводом (dev)
+  run-linux.sh             То же для Linux (dev)
+  common/                  Общий код сервера (статическая библиотека)
+    include/
+      ProtocolTypes.h      ControlHeader + enum MessageType
+      Serialization.h      WriteString/ReadString, WriteScalar/ReadScalar
+      TcpFramer.h/.cpp     Кадрирование поверх TCP
+      ServiceClient.h      CallService — вызов внутреннего сервиса
+      PlatformSocket.h/.cpp  Слой абстракции над Winsock2/BSD sockets
+      Config.h/.cpp        LoadConfig — чтение config.json (nlohmann::json)
+      SqlFile.h/.cpp       LoadSqlFile — чтение одного .sql-файла в строку
+      MigrationRunner.h/.cpp  LoadMigrationsFromDirectory + ApplyMigrations (PRAGMA user_version)
+      *Messages.h          Структуры payload по доменам
+  services/
+    gateway/               Порт 6000. Точка входа, сессии, fanout. Своей БД нет
+    auth/                  Порт 6001. Регистрация/логин, PBKDF2. freecord_auth.db
+    room/                  Порт 6002. Комнаты. freecord_rooms.db
+    message/               Порт 6003. Сообщения и история. freecord_messages.db
+  tools/test_client/       Консольный клиент на C++
 client/
   FreeCord.Protocol/     Библиотека протокола на C#, без UI
   FreeCord.Desktop/      Avalonia + CommunityToolkit.Mvvm
   FreeCord.ConsoleTest/  Консольный клиент для отладки
-tools/test_client/       Консольный клиент на C++
 ```
 
 ---
 
 ## Команды
 
-Автосборка для разработки (дев-скрипты в корне репозитория — не для установщика, только чтобы быстро собрать и перезапустить). Каждый сам находит корень проекта, ставит зависимости через vcpkg, конфигурирует и собирает, останавливает уже запущенные сервисы и всегда чистит `*.db` после сборки — так что перенос папки проекта на другую машину/путь ничего не ломает:
+Автосборка для разработки (дев-скрипты в `server/` — не для установщика, только чтобы быстро собрать и перезапустить). Каждый сам находит корень `server/`, ставит зависимости через vcpkg, конфигурирует и собирает, останавливает уже запущенные сервисы и всегда чистит `*.db` после сборки — так что перенос папки проекта на другую машину/путь ничего не ломает. Запускать из корня репозитория:
 ```powershell
-.\build-windows.ps1
+.\server\build-windows.ps1
 ```
 ```bash
-./build-linux.sh   # внутри WSL/Linux; путь проекта должен быть в родной ФС (не /mnt/*)
+./server/build-linux.sh   # внутри WSL/Linux; путь проекта должен быть в родной ФС (не /mnt/*)
 ```
 
 Автозапуск всех четырёх сервисов разом — вывод всех процессов идёт в одну консоль, каждый сервис своим цветом (сами сервисы уже пишут строки с префиксом `[имя]`, скрипт просто красит). `Ctrl+C` останавливает всё:
 ```powershell
-.\run-windows.ps1
+.\server\run-windows.ps1
 ```
 ```bash
-./run-linux.sh
+./server/run-linux.sh
 ```
 
-Ручная сборка под Windows (из корня проекта), если скрипт почему-то не подходит:
+Ручная сборка под Windows (из папки `server/`), если скрипт почему-то не подходит:
 ```powershell
+cd server
 mkdir build-windows; cd build-windows
 cmake .. -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
 cmake --build .
@@ -70,7 +72,7 @@ cmake --build .
 
 Сборка под Linux делается отдельно, в WSL/Linux-окружении, в свою папку `build-linux` — см. раздел «Портирование на Linux» ниже.
 
-Запуск — четыре процесса, каждый в своём окне, из папки `build-windows`:
+Запуск — четыре процесса, каждый в своём окне, из папки `server/build-windows`:
 ```
 .\services\auth\Debug\auth_service.exe
 .\services\room\Debug\room_service.exe
@@ -86,17 +88,17 @@ dotnet run
 
 Зависимости через vcpkg: `sqlite3`, `sqlitecpp`, `openssl`, `nlohmann-json`.
 
-Все четыре сервиса при старте читают `config.json` и папку `db/` (миграции + SQL-запросы) из своей рабочей директории. CMake копирует их из корня репозитория в `build-windows/`/`build-linux/` при каждой сборке (таргет `copy_config`) — именно туда, откуда по инструкции выше и запускаются `.exe`. Файла нет, он битый, или не хватает SQL-файла — сервис сразу падает с понятным сообщением об ошибке, никаких скрытых дефолтов в коде нет.
+Все четыре сервиса при старте читают `config.json` и папку `db/` (миграции + SQL-запросы) из своей рабочей директории. CMake копирует их из `server/` в `server/build-windows/`/`server/build-linux/` при каждой сборке (таргет `copy_config`) — именно туда, откуда по инструкции выше и запускаются `.exe`. Файла нет, он битый, или не хватает SQL-файла — сервис сразу падает с понятным сообщением об ошибке, никаких скрытых дефолтов в коде нет.
 
-**Что вынесено из кода, а что нет.** Порты, пути к БД, адрес хоста для внутренних вызовов, таймауты (`gateway.recvTimeoutMs`, `gateway.clientIdleTimeoutSec`, `gateway.serviceCallTimeoutMs`), лимит длины сообщения (`message.maxTextLength`) — в `config.json`. Все SQL-запросы и схемы таблиц — в `db/<сервис>/`. В коде остаётся только то, что связано с шифрованием (параметры PBKDF2 в `PasswordHasher.cpp`) и внутренние инварианты, завязанные на другие части системы: `SYSTEM_ROOM_ID` (совпадает с seed-данными в `db/room/migrations/001_initial.sql`) и `kMaxPayloadSize` в `TcpFramer.cpp` (должен совпадать с тем же лимитом в C#-клиенте — иначе сервер и клиент по-разному решат, что «слишком большой» кадр).
+**Что вынесено из кода, а что нет.** Порты, пути к БД, адрес хоста для внутренних вызовов, таймауты (`gateway.recvTimeoutMs`, `gateway.clientIdleTimeoutSec`, `gateway.serviceCallTimeoutMs`), лимит длины сообщения (`message.maxTextLength`) — в `server/config.json`. Все SQL-запросы и схемы таблиц — в `server/db/<сервис>/`. В коде остаётся только то, что связано с шифрованием (параметры PBKDF2 в `PasswordHasher.cpp`) и внутренние инварианты, завязанные на другие части системы: `SYSTEM_ROOM_ID` (совпадает с seed-данными в `server/db/room/migrations/001_initial.sql`) и `kMaxPayloadSize` в `TcpFramer.cpp` (должен совпадать с тем же лимитом в C#-клиенте — иначе сервер и клиент по-разному решат, что «слишком большой» кадр).
 
 ---
 
 ## Критические инварианты
 
-**Сериализация C++ и C# должна совпадать байт в байт.** При изменении любой структуры в `common/include/*Messages.h` обязательно нужна зеркальная правка в `client/FreeCord.Protocol/Payloads.cs`, и наоборот. Порядок полей, их типы и размеры должны совпадать точно. Формат: строки — `uint16` длина в байтах + UTF-8 без null-терминатора; числа — little-endian (совпадает у `#pragma pack(1)` в C++ и `BinaryWriter` в .NET). При добавлении нового `MessageType` его нужно продублировать в `client/FreeCord.Protocol/MessageType.cs` с тем же числовым значением.
+**Сериализация C++ и C# должна совпадать байт в байт.** При изменении любой структуры в `server/common/include/*Messages.h` обязательно нужна зеркальная правка в `client/FreeCord.Protocol/Payloads.cs`, и наоборот. Порядок полей, их типы и размеры должны совпадать точно. Формат: строки — `uint16` длина в байтах + UTF-8 без null-терминатора; числа — little-endian (совпадает у `#pragma pack(1)` в C++ и `BinaryWriter` в .NET). При добавлении нового `MessageType` его нужно продублировать в `client/FreeCord.Protocol/MessageType.cs` с тем же числовым значением.
 
-**Схема БД версионируется через `PRAGMA user_version`, миграции — файлы, не удалять руками.** Каждый репозиторий при старте вызывает `ApplyMigrations(db, LoadMigrationsFromDirectory("db/<сервис>/migrations"))` — накатывает по порядку файлы `NNN_описание.sql` с номером больше текущей версии, каждый в своей транзакции. Новая версия схемы = новый файл `002_....sql` рядом с `001_initial.sql`, **не редактировать уже применённые файлы** — раннер не увидит изменений в файле с уже накаченным номером. `.db`-файл теперь никогда не нужно удалять вручную.
+**Схема БД версионируется через `PRAGMA user_version`, миграции — файлы, не удалять руками.** Каждый репозиторий при старте вызывает `ApplyMigrations(db, LoadMigrationsFromDirectory("db/<сервис>/migrations"))` — путь относительно рабочей директории процесса (`server/db/` в исходниках, копируется в `server/build-*/db/`) — накатывает по порядку файлы `NNN_описание.sql` с номером больше текущей версии, каждый в своей транзакции. Новая версия схемы = новый файл `002_....sql` рядом с `001_initial.sql`, **не редактировать уже применённые файлы** — раннер не увидит изменений в файле с уже накаченным номером. `.db`-файл теперь никогда не нужно удалять вручную.
 
 **Чтение из сокета всегда в цикле.** TCP отдаёт поток байт, а не сообщения; один `recv` может вернуть меньше запрошенного. Это уже реализовано в `RecvAll`/`SendAll` в `TcpFramer.cpp` и в `ReadExactlyAsync` на стороне C#. Не заменяй на одиночные вызовы.
 
@@ -126,7 +128,7 @@ dotnet run
 
 ## Известные ограничения
 
-- **Разное покрытие тестами Windows/Linux.** Сетевой код переведён на слой абстракции `common/include/PlatformSocket.h` (`socket_t`, `CloseSocket`, `GetLastSocketError`, `IsTimeoutError`, `SetRecvTimeout`, `SocketLibraryGuard`). Собрано и проверено end-to-end на обеих платформах (Windows — нативно, Linux — в WSL2/Ubuntu-24.04, полный сценарий через `dotnet`-клиент на Windows против сервера в WSL). Не проверялось: реальный отдельный Linux-хост/сервер без WSL, поведение таймаутов/SIGPIPE под настоящей нагрузкой.
+- **Разное покрытие тестами Windows/Linux.** Сетевой код переведён на слой абстракции `server/common/include/PlatformSocket.h` (`socket_t`, `CloseSocket`, `GetLastSocketError`, `IsTimeoutError`, `SetRecvTimeout`, `SocketLibraryGuard`). Собрано и проверено end-to-end на обеих платформах (Windows — нативно, Linux — в WSL2/Ubuntu-24.04, полный сценарий через `dotnet`-клиент на Windows против сервера в WSL). Не проверялось: реальный отдельный Linux-хост/сервер без WSL, поведение таймаутов/SIGPIPE под настоящей нагрузкой.
 - **Нет шифрования.** Пароли ходят открытым текстом. На localhost неважно, при выставлении в интернет — критично.
 - **Нет ролевой модели.** Все комнаты доступны всем залогиненным.
 - **UI минимальный.** Нет списка участников, аватаров, группировки сообщений.
@@ -136,13 +138,14 @@ dotnet run
 
 ## Планы, в порядке приоритета
 
-1. ~~**Портирование сервера на Linux**~~ — слой абстракции `common/include/PlatformSocket.h`, полный сценарий проверен на Ubuntu-24.04 под WSL2.
-2. ~~**JSON-конфигурация**~~ — `config.json` в корне репозитория, `common/include/Config.h` + `LoadConfig`.
-3. ~~**Система миграций БД**~~ — `PRAGMA user_version` + `MigrationRunner` (`common/include/MigrationRunner.h`), SQL-миграции и запросы вынесены в `db/<сервис>/`, схема меняется без потери данных и без удаления `.db` вручную.
-4. **TLS** — обязательный для клиент↔gateway, опциональный флагом для межсервисных соединений. Планировался через OpenSSL с самоподписанным сертификатом и проверкой по отпечатку (pinning). Классы `TlsContext` и `TlsSocket` были спроектированы, но в репозиторий не попали.
-5. **Установщик для сервера** — systemd-юниты, автозапуск, скрипт развёртывания.
-6. **Ролевая модель** — приватные комнаты, права. Здесь пригодится `room_members`.
-7. **Голос и видео** — UDP, SFU-релей на сервере, Opus и H.264 через FFmpeg. Планировался `MediaPacketHeader` с `sessionId`, `senderId`, фрагментацией и `frameId`; сервер форвардит пакеты как есть, без декодирования.
+1. ~~**Портирование сервера на Linux**~~ — слой абстракции `server/common/include/PlatformSocket.h`, полный сценарий проверен на Ubuntu-24.04 под WSL2.
+2. ~~**JSON-конфигурация**~~ — `server/config.json`, `server/common/include/Config.h` + `LoadConfig`.
+3. ~~**Система миграций БД**~~ — `PRAGMA user_version` + `MigrationRunner` (`server/common/include/MigrationRunner.h`), SQL-миграции и запросы вынесены в `server/db/<сервис>/`, схема меняется без потери данных и без удаления `.db` вручную.
+4. ~~**Серверная часть вынесена в отдельную папку**~~ — `server/` рядом с `client/`, чтобы структура репозитория не выглядела так, будто весь проект — это `client/`.
+5. **TLS** — обязательный для клиент↔gateway, опциональный флагом для межсервисных соединений. Планировался через OpenSSL с самоподписанным сертификатом и проверкой по отпечатку (pinning). Классы `TlsContext` и `TlsSocket` были спроектированы, но в репозиторий не попали.
+6. **Установщик для сервера** — systemd-юниты, автозапуск, скрипт развёртывания.
+7. **Ролевая модель** — приватные комнаты, права. Здесь пригодится `room_members`.
+8. **Голос и видео** — UDP, SFU-релей на сервере, Opus и H.264 через FFmpeg. Планировался `MediaPacketHeader` с `sessionId`, `senderId`, фрагментацией и `frameId`; сервер форвардит пакеты как есть, без декодирования.
 
 ---
 

@@ -100,38 +100,39 @@ TCP передаёт **поток байт**, а не сообщения, поэ
 
 ```
 FreeCord/
-├── config.json                Порты, пути к БД, лимиты, таймауты — общий для всех сервисов
-├── db/                        SQL вне кода: миграции и запросы, по сервисам
-│   ├── auth/{migrations,queries}/*.sql
-│   ├── room/{migrations,queries}/*.sql
-│   └── message/{migrations,queries}/*.sql
-├── build-windows.ps1          Автосборка под Windows (dev)
-├── build-linux.sh             Автосборка под Linux (dev)
-├── run-windows.ps1            Запуск всех сервисов с общим выводом (dev)
-├── run-linux.sh               То же для Linux (dev)
-├── common/                    Общий код сервера
-│   ├── include/
-│   │   ├── ProtocolTypes.h    ControlHeader, перечень типов сообщений
-│   │   ├── Serialization.h    Чтение и запись строк и чисел
-│   │   ├── TcpFramer.h        Кадрирование поверх TCP
-│   │   ├── ServiceClient.h    Вызов внутреннего сервиса
-│   │   ├── PlatformSocket.h   Слой абстракции над Winsock2/BSD sockets
-│   │   ├── Config.h           Чтение config.json
-│   │   ├── SqlFile.h          Чтение одного .sql-файла в строку
-│   │   ├── MigrationRunner.h  Применение миграций, версия схемы через PRAGMA user_version
-│   │   └── *Messages.h        Структуры полезной нагрузки
-│   └── src/
-├── services/
-│   ├── gateway/               Точка входа, сессии, рассылка
-│   ├── auth/                  Учётные записи, PBKDF2
-│   ├── room/                  Комнаты
-│   └── message/               Сообщения и история
-├── client/
-│   ├── FreeCord.Protocol/     Библиотека протокола на C#
-│   ├── FreeCord.Desktop/      Приложение на Avalonia
-│   └── FreeCord.ConsoleTest/  Консольный клиент для отладки
-└── tools/
-    └── test_client/           Консольный клиент на C++
+├── server/                    Всё серверное — C++, отдельно от client/
+│   ├── config.json            Порты, пути к БД, лимиты, таймауты — общий для всех сервисов
+│   ├── db/                    SQL вне кода: миграции и запросы, по сервисам
+│   │   ├── auth/{migrations,queries}/*.sql
+│   │   ├── room/{migrations,queries}/*.sql
+│   │   └── message/{migrations,queries}/*.sql
+│   ├── build-windows.ps1      Автосборка под Windows (dev)
+│   ├── build-linux.sh         Автосборка под Linux (dev)
+│   ├── run-windows.ps1        Запуск всех сервисов с общим выводом (dev)
+│   ├── run-linux.sh           То же для Linux (dev)
+│   ├── common/                Общий код сервера
+│   │   ├── include/
+│   │   │   ├── ProtocolTypes.h    ControlHeader, перечень типов сообщений
+│   │   │   ├── Serialization.h    Чтение и запись строк и чисел
+│   │   │   ├── TcpFramer.h        Кадрирование поверх TCP
+│   │   │   ├── ServiceClient.h    Вызов внутреннего сервиса
+│   │   │   ├── PlatformSocket.h   Слой абстракции над Winsock2/BSD sockets
+│   │   │   ├── Config.h           Чтение config.json
+│   │   │   ├── SqlFile.h          Чтение одного .sql-файла в строку
+│   │   │   ├── MigrationRunner.h  Применение миграций, версия схемы через PRAGMA user_version
+│   │   │   └── *Messages.h        Структуры полезной нагрузки
+│   │   └── src/
+│   ├── services/
+│   │   ├── gateway/           Точка входа, сессии, рассылка
+│   │   ├── auth/               Учётные записи, PBKDF2
+│   │   ├── room/               Комнаты
+│   │   └── message/            Сообщения и история
+│   └── tools/
+│       └── test_client/       Консольный клиент на C++
+└── client/
+    ├── FreeCord.Protocol/     Библиотека протокола на C#
+    ├── FreeCord.Desktop/      Приложение на Avalonia
+    └── FreeCord.ConsoleTest/  Консольный клиент для отладки
 ```
 
 ---
@@ -142,14 +143,14 @@ FreeCord/
 
 ```powershell
 # Windows
-.\build-windows.ps1
-.\run-windows.ps1
+.\server\build-windows.ps1
+.\server\run-windows.ps1
 ```
 
 ```bash
 # Linux (в т.ч. WSL2)
-./build-linux.sh
-./run-linux.sh
+./server/build-linux.sh
+./server/run-linux.sh
 ```
 
 Клиент:
@@ -167,7 +168,8 @@ dotnet run
 
 - [x] **Портирование сервера на Linux** — слой абстракции над сокетами, собирается и работает на Windows и Linux
 - [x] **JSON-конфигурация** — порты, пути к БД и адреса вместо констант в коде
-- [x] **Система миграций БД** — версия схемы хранится в `PRAGMA user_version`, миграции — файлы `db/<сервис>/migrations/NNN_*.sql`, применяются по порядку в отдельных транзакциях; `.db`-файл больше не нужно удалять вручную при изменении схемы
+- [x] **Система миграций БД** — версия схемы хранится в `PRAGMA user_version`, миграции — файлы `server/db/<сервис>/migrations/NNN_*.sql`, применяются по порядку в отдельных транзакциях; `.db`-файл больше не нужно удалять вручную при изменении схемы
+- [x] **Серверная часть вынесена в `server/`** — рядом с `client/`, чтобы структура репозитория не выглядела так, будто весь проект — это клиент
 - [ ] **TLS** — шифрование соединений (обязательное для клиента, опциональное между сервисами), самоподписанный сертификат с проверкой по отпечатку
 - [ ] **Установщик для сервера** — скрипт развёртывания, systemd-юниты, автозапуск
 - [ ] **Ролевая модель** — приватные комнаты, права доступа

@@ -60,15 +60,15 @@ cd FreeCord
 
 **Windows** (PowerShell, из корня репозитория):
 ```powershell
-.\build-windows.ps1
+.\server\build-windows.ps1
 ```
 
 **Linux:**
 ```bash
-./build-linux.sh
+./server/build-linux.sh
 ```
 
-Каждый скрипт сам находит корень проекта (можно переносить папку куда угодно), ставит зависимости через vcpkg, конфигурирует и собирает проект в `build-windows/` или `build-linux/` соответственно, останавливает уже запущенные сервисы (чтобы пересборка не упёрлась в залоченный файл) и всегда чистит старые `*.db` — каждая сборка начинает с чистой базы.
+Каждый скрипт сам находит корень `server/` (можно переносить папку куда угодно), ставит зависимости через vcpkg, конфигурирует и собирает проект в `server/build-windows/` или `server/build-linux/` соответственно, останавливает уже запущенные сервисы (чтобы пересборка не упёрлась в залоченный файл) и всегда чистит старые `*.db` — каждая сборка начинает с чистой базы.
 
 ### Шаг 3 — запуск сервера
 
@@ -76,12 +76,12 @@ cd FreeCord
 
 **Windows:**
 ```powershell
-.\run-windows.ps1
+.\server\run-windows.ps1
 ```
 
 **Linux:**
 ```bash
-./run-linux.sh
+./server/run-linux.sh
 ```
 
 `Ctrl+C` останавливает все четыре сервиса разом.
@@ -97,7 +97,7 @@ Avalonia кроссплатформенная, поэтому клиент за�
 
 ### Настройка портов и путей к БД
 
-Порты, пути к файлам БД, адрес хоста для внутренних вызовов, таймауты и лимит длины сообщения задаются в `config.json` в корне репозитория. SQL-запросы и схемы таблиц — в `db/<сервис>/`. Меняйте файлы в корне репозитория (не копии в `build-*/` — они перезаписываются при каждой сборке), затем пересоберите проект.
+Порты, пути к файлам БД, адрес хоста для внутренних вызовов, таймауты и лимит длины сообщения задаются в `server/config.json`. SQL-запросы и схемы таблиц — в `server/db/<сервис>/`. Меняйте файлы в `server/`, а не копии в `server/build-*/` — они перезаписываются при каждой сборке, затем пересоберите проект.
 
 ### Если что-то пошло не так
 
@@ -163,15 +163,15 @@ cd FreeCord
 
 **Windows** (PowerShell, from the repo root):
 ```powershell
-.\build-windows.ps1
+.\server\build-windows.ps1
 ```
 
 **Linux:**
 ```bash
-./build-linux.sh
+./server/build-linux.sh
 ```
 
-Each script locates its own repo root (so the folder can be moved anywhere), installs dependencies via vcpkg, configures and builds the project into `build-windows/` or `build-linux/`, stops any already-running services (so a rebuild isn't blocked by a locked binary), and always wipes old `*.db` files — every build starts from a clean database.
+Each script locates its own `server/` root (so the folder can be moved anywhere), installs dependencies via vcpkg, configures and builds the project into `server/build-windows/` or `server/build-linux/`, stops any already-running services (so a rebuild isn't blocked by a locked binary), and always wipes old `*.db` files — every build starts from a clean database.
 
 ### Step 3 — run the server
 
@@ -179,12 +179,12 @@ One script starts all four services (`auth`, `room`, `message`, `gateway`) and m
 
 **Windows:**
 ```powershell
-.\run-windows.ps1
+.\server\run-windows.ps1
 ```
 
 **Linux:**
 ```bash
-./run-linux.sh
+./server/run-linux.sh
 ```
 
 `Ctrl+C` stops all four services at once.
@@ -200,7 +200,7 @@ Avalonia is cross-platform, so the client runs the same way on both Windows and 
 
 ### Configuring ports and database paths
 
-Ports, database file paths, the internal service host, timeouts, and the message length limit are set in `config.json` at the repo root. SQL queries and table schemas live under `db/<service>/`. Edit the files at the repo root (not the copies under `build-*/` — those get overwritten on every build), then rebuild.
+Ports, database file paths, the internal service host, timeouts, and the message length limit are set in `server/config.json`. SQL queries and table schemas live under `server/db/<service>/`. Edit the files under `server/`, not the copies under `server/build-*/` — those get overwritten on every build, then rebuild.
 
 ### Troubleshooting
 
