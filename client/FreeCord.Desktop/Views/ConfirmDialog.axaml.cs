@@ -4,8 +4,8 @@ using Avalonia.Media;
 
 namespace FreeCord.Desktop.Views;
 
-// Диалог подтверждения необратимых действий (сейчас — только удаление аккаунта
-// из панели участников). Отдельный от TextPromptDialog, т.к. тут нет поля ввода.
+// Диалог подтверждения необратимых действий (сейчас — удаление аккаунта из
+// вкладки "Пользователи" в настройках сервера).
 public partial class ConfirmDialog : Window
 {
     public ConfirmDialog()

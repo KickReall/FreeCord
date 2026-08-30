@@ -4,18 +4,67 @@
 #include <vector>
 #include "Serialization.h"
 
+// Деление каналов на текстовые/голосовые — теперь создать голосовой канал можно
+// (вкладка "Каналы" в настройках сервера), но сама передача голоса не реализована,
+// это по-прежнему задел на план "Голос и видео" в CLAUDE.md. Объявлено здесь же
+// (не ниже, у RoomInfo) — используется уже в RoomCreateRequestPayload.
+enum class RoomType : uint8_t { Text = 0, Voice = 1 };
+
 struct RoomCreateRequestPayload {
     std::string name;
+    RoomType type = RoomType::Text;
 
     std::vector<uint8_t> Serialize() const {
         std::vector<uint8_t> buffer;
         WriteString(buffer, name);
+        WriteScalar(buffer, static_cast<uint8_t>(type));
         return buffer;
     }
     static RoomCreateRequestPayload Deserialize(const std::vector<uint8_t>& buffer) {
         size_t offset = 0;
         RoomCreateRequestPayload r;
         r.name = ReadString(buffer, offset);
+        r.type = static_cast<RoomType>(ReadScalar<uint8_t>(buffer, offset));
+        return r;
+    }
+};
+
+// Переименование канала — тот же тип и клиент->gateway, и gateway->room; gateway
+// после успеха досылает RoomUpdated всем (см. ChatMessages.h), т.к. и сам инициатор
+// не узнаёт новое имя из одного статуса.
+struct RoomUpdateRequestPayload {
+    int64_t roomId = 0;
+    std::string name;
+
+    std::vector<uint8_t> Serialize() const {
+        std::vector<uint8_t> buffer;
+        WriteScalar(buffer, roomId);
+        WriteString(buffer, name);
+        return buffer;
+    }
+    static RoomUpdateRequestPayload Deserialize(const std::vector<uint8_t>& buffer) {
+        size_t offset = 0;
+        RoomUpdateRequestPayload r;
+        r.roomId = ReadScalar<int64_t>(buffer, offset);
+        r.name = ReadString(buffer, offset);
+        return r;
+    }
+};
+
+// Удаление канала — тот же тип и клиент->gateway, и gateway->room. Системную комнату
+// (SYSTEM_ROOM_ID) удалить нельзя — проверяет сам room_service, он же и хранит запись.
+struct RoomDeleteRequestPayload {
+    int64_t roomId = 0;
+
+    std::vector<uint8_t> Serialize() const {
+        std::vector<uint8_t> buffer;
+        WriteScalar(buffer, roomId);
+        return buffer;
+    }
+    static RoomDeleteRequestPayload Deserialize(const std::vector<uint8_t>& buffer) {
+        size_t offset = 0;
+        RoomDeleteRequestPayload r;
+        r.roomId = ReadScalar<int64_t>(buffer, offset);
         return r;
     }
 };
@@ -75,15 +124,32 @@ struct StatusResponsePayload {
     }
 };
 
-// Задел на будущее (см. план "Голос и видео" в CLAUDE.md) — деление каналов на
-// текстовые/голосовые. Пока чисто модель данных: создание голосового канала
-// нигде не выставлено наружу, все существующие комнаты — Text.
-enum class RoomType : uint8_t { Text = 0, Voice = 1 };
-
 struct RoomInfo {
     int64_t id = 0;
     std::string name;
     RoomType type = RoomType::Text;
+    // room_service ничего не знает про конкретную сессию и всегда отдаёт true —
+    // это поле реально проставляет только gateway в HandleRoomList, пересчитывая
+    // EffectivePermissionsInRoom под запрашивающего пользователя (даёт клиенту
+    // возможность отключить поле ввода сообщения, а не просто молча дропать текст).
+    bool canSendMessages = true;
+
+    std::vector<uint8_t> Serialize() const {
+        std::vector<uint8_t> buffer;
+        WriteScalar(buffer, id);
+        WriteString(buffer, name);
+        WriteScalar(buffer, static_cast<uint8_t>(type));
+        WriteScalar(buffer, static_cast<uint8_t>(canSendMessages ? 1 : 0));
+        return buffer;
+    }
+    static RoomInfo Deserialize(const std::vector<uint8_t>& buffer, size_t& offset) {
+        RoomInfo info;
+        info.id = ReadScalar<int64_t>(buffer, offset);
+        info.name = ReadString(buffer, offset);
+        info.type = static_cast<RoomType>(ReadScalar<uint8_t>(buffer, offset));
+        info.canSendMessages = ReadScalar<uint8_t>(buffer, offset) != 0;
+        return info;
+    }
 };
 
 struct RoomListResponsePayload {
@@ -93,9 +159,8 @@ struct RoomListResponsePayload {
         std::vector<uint8_t> buffer;
         WriteScalar(buffer, static_cast<uint32_t>(rooms.size()));
         for (const auto& room : rooms) {
-            WriteScalar(buffer, room.id);
-            WriteString(buffer, room.name);
-            WriteScalar(buffer, static_cast<uint8_t>(room.type));
+            auto roomBytes = room.Serialize();
+            buffer.insert(buffer.end(), roomBytes.begin(), roomBytes.end());
         }
         return buffer;
     }
@@ -104,11 +169,7 @@ struct RoomListResponsePayload {
         RoomListResponsePayload r;
         uint32_t count = ReadScalar<uint32_t>(buffer, offset);
         for (uint32_t i = 0; i < count; ++i) {
-            RoomInfo info;
-            info.id = ReadScalar<int64_t>(buffer, offset);
-            info.name = ReadString(buffer, offset);
-            info.type = static_cast<RoomType>(ReadScalar<uint8_t>(buffer, offset));
-            r.rooms.push_back(info);
+            r.rooms.push_back(RoomInfo::Deserialize(buffer, offset));
         }
         return r;
     }

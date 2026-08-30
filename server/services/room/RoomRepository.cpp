@@ -14,6 +14,10 @@ RoomRepository::RoomRepository(const std::string& dbPath)
     ApplyMigrations(m_db, LoadMigrationsFromDirectory("db/room/migrations"));
 
     m_sqlCreateRoom = LoadSqlFile("db/room/queries/create_room.sql");
+    m_sqlUpdateRoomName = LoadSqlFile("db/room/queries/update_room_name.sql");
+    m_sqlDeleteRoom = LoadSqlFile("db/room/queries/delete_room.sql");
+    m_sqlDeleteRoomMembers = LoadSqlFile("db/room/queries/delete_room_members.sql");
+    m_sqlRoomIsSystem = LoadSqlFile("db/room/queries/room_is_system.sql");
     m_sqlRoomExists = LoadSqlFile("db/room/queries/room_exists.sql");
     m_sqlAddMember = LoadSqlFile("db/room/queries/add_member.sql");
     m_sqlRemoveMember = LoadSqlFile("db/room/queries/remove_member.sql");
@@ -30,17 +34,59 @@ RoomRepository::RoomRepository(const std::string& dbPath)
     m_sqlIsMuted = LoadSqlFile("db/room/queries/is_muted.sql");
 }
 
-int64_t RoomRepository::CreateRoom(const std::string& name) {
+int64_t RoomRepository::CreateRoom(const std::string& name, uint8_t type) {
     std::lock_guard<std::mutex> lock(m_mutex);
     try {
         SQLite::Statement query(m_db, m_sqlCreateRoom);
         query.bind(1, name);
+        query.bind(2, static_cast<int>(type));
         query.exec();
         return m_db.getLastInsertRowid();
     }
     catch (const SQLite::Exception&) {
         return -1; // UNIQUE constraint — имя занято
     }
+}
+
+RoomUpdateResult RoomRepository::UpdateRoomName(int64_t roomId, const std::string& name) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    SQLite::Statement systemQuery(m_db, m_sqlRoomIsSystem);
+    systemQuery.bind(1, roomId);
+    if (!systemQuery.executeStep()) return RoomUpdateResult::NotFound;
+    if (systemQuery.getColumn(0).getInt() != 0) return RoomUpdateResult::SystemRoom;
+
+    try {
+        SQLite::Statement updateQuery(m_db, m_sqlUpdateRoomName);
+        updateQuery.bind(1, name);
+        updateQuery.bind(2, roomId);
+        updateQuery.exec();
+        return RoomUpdateResult::Ok;
+    }
+    catch (const SQLite::Exception&) {
+        return RoomUpdateResult::NameTaken; // UNIQUE constraint
+    }
+}
+
+RoomDeleteResult RoomRepository::DeleteRoom(int64_t roomId) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    SQLite::Statement systemQuery(m_db, m_sqlRoomIsSystem);
+    systemQuery.bind(1, roomId);
+    if (!systemQuery.executeStep()) return RoomDeleteResult::NotFound;
+    if (systemQuery.getColumn(0).getInt() != 0) return RoomDeleteResult::SystemRoom;
+
+    // room_members — единственная из связанных таблиц без ON DELETE CASCADE (её FK
+    // старше остальных, из 001_initial.sql, до того как каскад вошёл в привычку) —
+    // чистим вручную, иначе внешний ключ не даст удалить комнату. channel_role_overrides/
+    // channel_bans/channel_mutes (миграции 002/003) каскадятся сами. Историю сообщений
+    // (другая БД) не трогаем — как и при удалении пользователя, sender_name/roomId там денормализованы.
+    SQLite::Statement clearMembers(m_db, m_sqlDeleteRoomMembers);
+    clearMembers.bind(1, roomId);
+    clearMembers.exec();
+
+    SQLite::Statement deleteQuery(m_db, m_sqlDeleteRoom);
+    deleteQuery.bind(1, roomId);
+    deleteQuery.exec();
+    return RoomDeleteResult::Ok;
 }
 
 bool RoomRepository::RoomExists(int64_t roomId) {

@@ -1,6 +1,7 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:FreeCord.Desktop.ViewModels"
+        xmlns:views="using:FreeCord.Desktop.Views"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="600"
@@ -49,6 +50,10 @@
         </Style>
     </Window.Styles>
 
+    <!-- Панель настроек сервера — оверлей поверх всего окна (не отдельное Window),
+         поэтому корневое содержимое обёрнуто в Panel: второй слой (тёмная подложка +
+         сама панель) рисуется поверх первого просто по порядку следования в XAML. -->
+    <Panel>
     <Grid ColumnDefinitions="72,*">
 
         <!-- Левая панель — список подключённых серверов -->
@@ -84,12 +89,11 @@
                     <ListBox.ItemTemplate>
                         <DataTemplate x:DataType="vm:ServerSessionViewModel">
                             <Border x:Name="ServerAvatar" Width="48" Height="48" CornerRadius="24" Background="#313338" Margin="0,4"
-                                    ToolTip.Tip="{Binding DisplayName}">
+                                    ClipToBounds="True" ToolTip.Tip="{Binding DisplayName}">
+                                <!-- Переименование и иконка сервера убраны отсюда — имя и иконка теперь
+                                     глобальные, задаёт владелец в окне настроек сервера (шестерёнка). -->
                                 <Border.ContextMenu>
                                     <ContextMenu>
-                                        <MenuItem Header="Переименовать"
-                                                  Command="{Binding $parent[Window].DataContext.RenameServerCommand}"
-                                                  CommandParameter="{Binding}"/>
                                         <MenuItem Header="Переместить вверх"
                                                   Command="{Binding $parent[Window].DataContext.MoveServerUpCommand}"
                                                   CommandParameter="{Binding}"/>
@@ -102,17 +106,22 @@
                                                   CommandParameter="{Binding}"/>
                                     </ContextMenu>
                                 </Border.ContextMenu>
-                                <TextBlock Text="{Binding Initials}" Foreground="White" FontWeight="Bold"
-                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                <Panel>
+                                    <TextBlock Text="{Binding Initials}" Foreground="White" FontWeight="Bold"
+                                               IsVisible="{Binding !HasServerIcon}"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    <Image Source="{Binding ServerIcon}" IsVisible="{Binding HasServerIcon}" Stretch="UniformToFill"/>
+                                </Panel>
                             </Border>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
                 </ListBox>
 
                 <Button Grid.Row="1" Classes="flat" Content="+" Command="{Binding AddServerCommand}"
-                        Width="48" Height="48" CornerRadius="24" Margin="0,8,0,16"
+                        Width="48" Height="48" CornerRadius="24" Margin="0,8,0,16" Padding="0"
                         Background="#313338" Foreground="#3BA55D"
-                        HorizontalAlignment="Center" HorizontalContentAlignment="Center" FontSize="20" FontWeight="Bold"/>
+                        HorizontalAlignment="Center" HorizontalContentAlignment="Center"
+                        VerticalContentAlignment="Center" FontSize="20" FontWeight="Bold"/>
             </Grid>
         </Border>
 
@@ -148,9 +157,6 @@
                             <TextBox Text="{Binding InviteLinkText}" PlaceholderText="freecord://host:port?fp=..."/>
                         </StackPanel>
 
-                        <TextBlock Text="Название (для рейла слева)" Foreground="#949BA4"/>
-                        <TextBox Text="{Binding DisplayName}"/>
-
                         <TextBlock Text="Username" Foreground="#949BA4"/>
                         <TextBox Text="{Binding Username}"/>
 
@@ -159,8 +165,15 @@
 
                         <Button Classes="accent" Content="Log in" Command="{Binding LoginCommand}"
                                 HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
+                        <!-- IsPersisted означает, что на этом сервере уже был хотя бы один успешный
+                             вход (см. PersistIfNeeded) — регистрировать здесь больше нечего. -->
                         <Button Content="Register" Command="{Binding RegisterCommand}"
+                                IsVisible="{Binding !IsPersisted}"
                                 HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
+
+                        <!-- Сюда же попадают статусы автопереподключения при обрыве связи -->
+                        <TextBlock Text="{Binding Status}" Foreground="#949BA4" FontSize="12"
+                                   HorizontalAlignment="Center" TextWrapping="Wrap"/>
                     </StackPanel>
                 </Border>
 
@@ -172,8 +185,17 @@
                     <Border Grid.Column="0" Background="#2B2D31">
                         <Grid RowDefinitions="Auto,Auto,*,Auto">
                             <Border Grid.Row="0" Padding="16,14" BorderBrush="#1E1F22" BorderThickness="0,0,0,1">
-                                <TextBlock Text="{Binding DisplayName}" Foreground="White" FontWeight="Bold"
-                                           FontSize="15" TextTrimming="CharacterEllipsis"/>
+                                <Grid ColumnDefinitions="*,Auto">
+                                    <TextBlock Grid.Column="0" Text="{Binding DisplayName}" Foreground="White" FontWeight="Bold"
+                                               FontSize="15" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                                    <!-- Настройки сервера — по правам, а не жёстко только Owner'у/admin'у:
+                                         видно, если есть хоть одно из административных прав (см.
+                                         CanOpenServerSettings) — Owner их всё равно имеет как admin. -->
+                                    <Button Grid.Column="1" Classes="flat" Content="⚙" FontSize="15"
+                                            Command="{Binding OpenServerSettingsCommand}"
+                                            IsVisible="{Binding CanOpenServerSettings}"
+                                            Padding="4" ToolTip.Tip="Настройки сервера"/>
+                                </Grid>
                             </Border>
 
                             <Button Grid.Row="1" Content="🔗 Скопировать инвайт-ссылку"
@@ -275,12 +297,14 @@
                         <Grid Grid.Row="3" ColumnDefinitions="*,Auto" Margin="0,8,0,0"
                               IsVisible="{Binding HasSelectedRoom}">
                             <TextBox Grid.Column="0" Text="{Binding MessageText}"
-                                     PlaceholderText="Написать сообщение...">
+                                     IsEnabled="{Binding CanSendInSelectedRoom}"
+                                     PlaceholderText="{Binding MessageInputPlaceholder}">
                                 <TextBox.KeyBindings>
                                     <KeyBinding Gesture="Enter" Command="{Binding SendMessageCommand}"/>
                                 </TextBox.KeyBindings>
                             </TextBox>
                             <Button Grid.Column="1" Classes="accent" Content="Отправить" Margin="6,0,0,0"
+                                    IsEnabled="{Binding CanSendInSelectedRoom}"
                                     Command="{Binding SendMessageCommand}"/>
                         </Grid>
                     </Grid>
@@ -316,7 +340,9 @@
                                                             </Border.Styles>
                                                             <Grid ColumnDefinitions="Auto,*">
                                                                 <Grid Grid.Column="0" Width="24" Height="24" VerticalAlignment="Center">
-                                                                    <Border CornerRadius="12" Background="#313338"/>
+                                                                    <Border CornerRadius="12" Background="#313338" ClipToBounds="True">
+                                                                        <Image Source="{Binding Avatar}" IsVisible="{Binding HasAvatar}" Stretch="UniformToFill"/>
+                                                                    </Border>
                                                                     <Ellipse Width="9" Height="9" Stroke="#2B2D31" StrokeThickness="2"
                                                                              HorizontalAlignment="Right" VerticalAlignment="Bottom"
                                                                              Fill="{Binding PresenceBrush}"/>
@@ -324,32 +350,18 @@
                                                                 <TextBlock Grid.Column="1" Text="{Binding DisplayName}"
                                                                            Foreground="#DBDEE1" VerticalAlignment="Center"
                                                                            Margin="8,0,0,0" TextTrimming="CharacterEllipsis"/>
+                                                                <!-- Выдача роли/блокировка/удаление и загрузка своей аватарки убраны
+                                                                     отсюда — переезжают в окно настроек сервера (вкладка "Пользователи")
+                                                                     и в будущий экран настроек профиля. Локальное имя доступно всем и
+                                                                     на любого, кроме себя самого — смысла в нём для своей строки нет. -->
                                                                 <Grid.ContextMenu>
                                                                     <ContextMenu>
                                                                         <MenuItem Header="Это вы" IsEnabled="False"
                                                                                   IsVisible="{Binding IsSelf}"/>
-                                                                        <MenuItem Header="Владелец сервера" IsEnabled="False"
-                                                                                  IsVisible="{Binding IsOwner}"/>
                                                                         <MenuItem Header="Переименовать (локально)"
                                                                                   Command="{Binding $parent[Window].DataContext.ActiveServer.RenameMemberCommand}"
                                                                                   CommandParameter="{Binding}"
                                                                                   IsVisible="{Binding !IsSelf}"/>
-                                                                        <MenuItem Header="Выдать роль"
-                                                                                  Command="{Binding $parent[Window].DataContext.ActiveServer.AssignRoleToMemberCommand}"
-                                                                                  CommandParameter="{Binding}"
-                                                                                  IsVisible="{Binding CanManageRoles}"/>
-                                                                        <MenuItem Header="Убрать роль"
-                                                                                  Command="{Binding $parent[Window].DataContext.ActiveServer.RemoveRoleFromMemberCommand}"
-                                                                                  CommandParameter="{Binding}"
-                                                                                  IsVisible="{Binding CanManageRoles}"/>
-                                                                        <MenuItem Header="Заблокировать"
-                                                                                  Command="{Binding BlockCommand}"
-                                                                                  IsVisible="{Binding CanBlock}"/>
-                                                                        <Separator IsVisible="{Binding CanDelete}"/>
-                                                                        <MenuItem Header="Удалить"
-                                                                                  Command="{Binding $parent[Window].DataContext.ActiveServer.DeleteMemberCommand}"
-                                                                                  CommandParameter="{Binding}"
-                                                                                  IsVisible="{Binding CanDelete}"/>
                                                                     </ContextMenu>
                                                                 </Grid.ContextMenu>
                                                             </Grid>
@@ -372,4 +384,16 @@
             </Grid>
         </Grid>
     </Grid>
+
+    <!-- Тёмная подложка блокирует клики по всему, что под ней, просто тем, что у нeё
+         есть непрозрачный (полупрозрачный) Background — в Avalonia элемент с реальным
+         фоном перехватывает попадания указателя, элементы за ним их уже не получают. -->
+    <Border Background="#B0000000" IsVisible="{Binding IsServerSettingsOpen}">
+        <Border Width="820" Height="560" Background="#2B2D31" CornerRadius="8"
+                HorizontalAlignment="Center" VerticalAlignment="Center"
+                ClipToBounds="True">
+            <views:ServerSettingsPanel DataContext="{Binding ActiveServerSettings}"/>
+        </Border>
+    </Border>
+    </Panel>
 </Window>

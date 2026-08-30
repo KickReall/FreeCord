@@ -23,6 +23,26 @@ inline std::string ReadString(const std::vector<uint8_t>& buffer, size_t& offset
     return result;
 }
 
+// --- Бинарные данные: uint32_t длина + сами байты. Отдельно от строк (там uint16,
+// т.е. максимум 64 КБ — мало для картинок вроде аватарок) ---
+
+inline void WriteBytes(std::vector<uint8_t>& buffer, const std::vector<uint8_t>& data) {
+    uint32_t len = static_cast<uint32_t>(data.size());
+    const uint8_t* lenBytes = reinterpret_cast<const uint8_t*>(&len);
+    buffer.insert(buffer.end(), lenBytes, lenBytes + sizeof(len));
+    buffer.insert(buffer.end(), data.begin(), data.end());
+}
+
+inline std::vector<uint8_t> ReadBytes(const std::vector<uint8_t>& buffer, size_t& offset) {
+    uint32_t len = 0;
+    std::memcpy(&len, buffer.data() + offset, sizeof(len));
+    offset += sizeof(len);
+
+    std::vector<uint8_t> result(buffer.begin() + offset, buffer.begin() + offset + len);
+    offset += len;
+    return result;
+}
+
 // --- Числа фиксированного размера ---
 // Шаблон вместо отдельных функций на каждый тип: один код для uint8_t/uint32_t/uint64_t/int64_t.
 

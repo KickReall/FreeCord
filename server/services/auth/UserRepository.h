@@ -34,11 +34,18 @@ struct UserSummary {
     int64_t id;
     std::string username;
     std::vector<int64_t> roleIds;
+    int64_t avatarVersion = 0;
+};
+
+// version = 0 и пустой bytes — аватарки нет (пользователь не найден считается тем же).
+struct AvatarData {
+    int64_t version = 0;
+    std::vector<uint8_t> bytes;
 };
 
 class UserRepository {
 public:
-    explicit UserRepository(const std::string& dbPath);
+    UserRepository(const std::string& dbPath, const std::string& avatarDir);
 
     // Возвращает id нового пользователя, либо -1, если username уже занят.
     int64_t CreateUser(const std::string& username, const std::string& passwordHash, const std::string& passwordSalt);
@@ -70,9 +77,17 @@ public:
     bool IsIpBanned(const std::string& ip);
     std::vector<std::string> ListBannedIps();
 
+    // Возвращает -1, если пользователь не найден (файл на диске тогда не трогается);
+    // иначе — новую версию (всегда > 0, т.к. bump — только инкремент). Файл
+    // перезаписывается ДО апдейта версии в БД: если запись на диск не удалась,
+    // версия не должна вырасти без реального файла за ней.
+    int64_t SetAvatar(int64_t userId, const std::vector<uint8_t>& data);
+    AvatarData GetAvatar(int64_t userId);
+
 private:
     SQLite::Database m_db;
     std::mutex m_mutex;
+    std::string m_avatarDir;
     std::string m_sqlCreateUser;
     std::string m_sqlFindByUsername;
     std::string m_sqlDeleteUser;
@@ -90,4 +105,6 @@ private:
     std::string m_sqlUnbanIp;
     std::string m_sqlIsIpBanned;
     std::string m_sqlListBannedIps;
+    std::string m_sqlBumpAvatarVersion;
+    std::string m_sqlGetAvatarVersion;
 };

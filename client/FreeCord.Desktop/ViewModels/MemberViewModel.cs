@@ -3,8 +3,10 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using FreeCord.Protocol;
 
 namespace FreeCord.Desktop.ViewModels;
 
@@ -22,6 +24,16 @@ public partial class MemberViewModel : ObservableObject
 
     // Проставляет gateway (см. RoleMessages.h) — auth ничего не знает о живых сессиях.
     public bool IsOnline { get; }
+
+    // Тот же принцип — заполняет только gateway из текущей сессии, пусто пока оффлайн.
+    // Нужен только вкладке "Пользователи" в настройках сервера, но хранить его здесь
+    // проще, чем заводить для одной вкладки отдельную модель строки.
+    public string Ip { get; }
+
+    // Отображаемые имена всех назначенных ролей через запятую — для вкладки
+    // "Пользователи" (в отличие от группировки по ОДНОЙ, самой сильной роли
+    // в основной панели участников, здесь нужен полный список).
+    public string RoleNames { get; }
 
     // Цвет точки-индикатора на аватарке. Считается здесь, а не через XAML-конвертер/
     // Classes-биндинг — тот вариант не сработал на практике (индикатор оставался серым
@@ -41,19 +53,31 @@ public partial class MemberViewModel : ObservableObject
     public bool CanBlock { get; }
     public bool CanDelete { get; }
 
+    // Загружается асинхронно после конструирования (см. ServerSessionViewModel.ApplyOrFetchAvatar) —
+    // либо сразу из дискового кэша, либо по итогам AvatarFetchResponse. null — аватарки нет
+    // или ещё не подгрузилась; тогда в UI остаётся круг-заглушка.
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasAvatar))]
+    private Bitmap? _avatar;
+
+    public bool HasAvatar => Avatar is not null;
+
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(DisplayName))]
     private string? _localNickname;
 
     public string DisplayName => string.IsNullOrEmpty(LocalNickname) ? Username : LocalNickname;
 
-    public MemberViewModel(long userId, string username, IReadOnlyList<long> roleIds, bool online, string? localNickname,
+    public MemberViewModel(long userId, string username, IReadOnlyList<long> roleIds, bool online, string ip,
+        IReadOnlyList<RoleInfo> allRoles, string? localNickname,
         bool isSelf, bool canManageRoles, bool canManageServerBans, bool canManageUsers, Action<long> block)
     {
         UserId = userId;
         Username = username;
         RoleIds = roleIds;
         IsOnline = online;
+        Ip = ip;
+        RoleNames = string.Join(", ", allRoles.Where(r => roleIds.Contains(r.Id)).Select(r => r.DisplayName));
         _localNickname = localNickname;
         IsSelf = isSelf;
         IsOwner = roleIds.Contains(FreeCord.Protocol.RoleIds.Owner);

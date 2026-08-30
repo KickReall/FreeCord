@@ -1,7 +1,5 @@
 using System.Collections.Specialized;
 using System.ComponentModel;
-using System.Linq;
-using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Threading;
@@ -25,22 +23,14 @@ public partial class MainWindow : Window
         if (DataContext is not MainWindowViewModel vm) return;
 
         vm.PropertyChanged += OnViewModelPropertyChanged;
-        vm.RenameRequested += OnRenameRequested;
         vm.CopyInviteLinkRequested += OnCopyInviteLinkRequested;
         SubscribeToActiveServer(vm.ActiveServer);
     }
 
-    // Диалог переименования — часть View, поэтому открывается здесь, а не во ViewModel
-    private async void OnRenameRequested(ServerSessionViewModel server)
-    {
-        var dialog = new TextPromptDialog("Переименовать сервер", "Название сервера", server.DisplayName);
-        var result = await dialog.ShowDialog<string?>(this);
-        if (!string.IsNullOrWhiteSpace(result))
-            server.DisplayName = result.Trim();
-    }
-
     // Локальный никнейм участника — виден только у меня, ни на что на сервере не влияет.
-    // Пустая строка = сброс к настоящему имени пользователя.
+    // Пустая строка = сброс к настоящему имени пользователя. Единственное, что осталось
+    // в контекстном меню панели участников — остальные административные действия
+    // переехали в оверлей настроек сервера (см. ServerSettingsPanel).
     private async void OnMemberRenameRequested(MemberViewModel member)
     {
         if (_subscribedServer is null) return;
@@ -48,39 +38,6 @@ public partial class MainWindow : Window
         var result = await dialog.ShowDialog<string?>(this);
         if (result is null) return;
         _subscribedServer.SetLocalNickname(member.UserId, result.Trim());
-    }
-
-    // Диалог выбора роли — как и переименование, это забота View
-    private async void OnMemberAssignRoleRequested(MemberViewModel member)
-    {
-        if (_subscribedServer is null) return;
-        var dialog = new RolePickerDialog(_subscribedServer.Roles);
-        var role = await dialog.ShowDialog<RoleInfo?>(this);
-        if (role is not null) await _subscribedServer.AssignRoleAsync(member.UserId, role.Id);
-    }
-
-    // Список для выбора ограничен ролями, которые у пользователя реально есть —
-    // снимать роль, которой и так нет, бессмысленно.
-    private async void OnMemberRemoveRoleRequested(MemberViewModel member)
-    {
-        if (_subscribedServer is null) return;
-        var currentRoles = _subscribedServer.Roles.Where(r => member.RoleIds.Contains(r.Id)).ToList();
-        var dialog = new RolePickerDialog(currentRoles);
-        var role = await dialog.ShowDialog<RoleInfo?>(this);
-        if (role is not null) await _subscribedServer.RemoveRoleAsync(member.UserId, role.Id);
-    }
-
-    // Необратимо (сносит аккаунт целиком) — поэтому единственное действие в панели
-    // участников с подтверждающим диалогом.
-    private async void OnMemberDeleteRequested(MemberViewModel member)
-    {
-        if (_subscribedServer is null) return;
-        var dialog = new ConfirmDialog("Удалить пользователя",
-            $"Удалить аккаунт «{member.Username}» целиком? Это действие необратимо: пользователь потеряет доступ, " +
-            "а его сессия (если он сейчас в сети) будет немедленно отключена. История сообщений останется.",
-            "Удалить");
-        var confirmed = await dialog.ShowDialog<bool>(this);
-        if (confirmed) await _subscribedServer.DeleteUserAsync(member.UserId);
     }
 
     // Буфер обмена — тоже доступен только через TopLevel, поэтому здесь, а не во ViewModel
@@ -110,9 +67,6 @@ public partial class MainWindow : Window
             _subscribedServer.Messages.CollectionChanged -= OnMessagesChanged;
             _subscribedServer.PropertyChanged -= OnActiveServerPropertyChanged;
             _subscribedServer.MemberRenameRequested -= OnMemberRenameRequested;
-            _subscribedServer.MemberAssignRoleRequested -= OnMemberAssignRoleRequested;
-            _subscribedServer.MemberRemoveRoleRequested -= OnMemberRemoveRoleRequested;
-            _subscribedServer.MemberDeleteRequested -= OnMemberDeleteRequested;
         }
 
         _subscribedServer = server;
@@ -122,9 +76,6 @@ public partial class MainWindow : Window
             _subscribedServer.Messages.CollectionChanged += OnMessagesChanged;
             _subscribedServer.PropertyChanged += OnActiveServerPropertyChanged;
             _subscribedServer.MemberRenameRequested += OnMemberRenameRequested;
-            _subscribedServer.MemberAssignRoleRequested += OnMemberAssignRoleRequested;
-            _subscribedServer.MemberRemoveRoleRequested += OnMemberRemoveRoleRequested;
-            _subscribedServer.MemberDeleteRequested += OnMemberDeleteRequested;
         }
     }
 

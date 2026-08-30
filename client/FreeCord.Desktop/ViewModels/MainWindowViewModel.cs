@@ -21,6 +21,15 @@ public partial class MainWindowViewModel : ViewModelBase
     // Плейсхолдер в правой панели виден, пока не выбран/не добавлен ни один сервер
     public bool HasActiveServer => ActiveServer is not null;
 
+    // Открытая панель настроек сервера — оверлей внутри MainWindow (не отдельное окно,
+    // см. ServerSettingsPanel), поэтому состояние "что показать и открыт ли оверлей
+    // вообще" естественно живёт здесь, а не во ViewModel конкретной сессии.
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsServerSettingsOpen))]
+    private ServerSettingsViewModel? _activeServerSettings;
+
+    public bool IsServerSettingsOpen => ActiveServerSettings is not null;
+
     public MainWindowViewModel()
     {
         // Один и тот же host:port мог попасть в servers.json дважды из-за старого
@@ -35,16 +44,30 @@ public partial class MainWindowViewModel : ViewModelBase
         if (deduped.Count != loaded.Count) _store.Save(deduped);
 
         foreach (var entry in deduped)
-            Servers.Add(new ServerSessionViewModel(_store, entry.Host, entry.Port, entry.DisplayName, isPersisted: true, GuardDuplicate, GuardFingerprint));
+            Servers.Add(CreateSession(entry.Host, entry.Port, entry.DisplayName, isPersisted: true));
 
         ActiveServer = Servers.FirstOrDefault();
     }
 
-    // Клик по "+" в левой панели — новый, ещё не сохранённый сервер
+    // Единая точка создания сессии — чтобы не забыть подписаться на её события
+    // (сейчас только ServerSettingsRequested) в обоих местах, где сессия появляется.
+    private ServerSessionViewModel CreateSession(string host, int port, string displayName, bool isPersisted)
+    {
+        var session = new ServerSessionViewModel(_store, host, port, displayName, isPersisted, GuardDuplicate, GuardFingerprint);
+        session.ServerSettingsRequested += server =>
+            ActiveServerSettings = new ServerSettingsViewModel(server, onClose: () => ActiveServerSettings = null);
+        return session;
+    }
+
+    // Клик по "+" в левой панели — новый, ещё не сохранённый сервер. DisplayName —
+    // временная заглушка до подключения: имя теперь глобальное и приходит с сервера
+    // (ServerInfoResponse, см. ServerSessionViewModel), локального переименования нет.
     [RelayCommand]
     private void AddServer()
     {
-        var session = new ServerSessionViewModel(_store, "127.0.0.1", 6000, "New server", isPersisted: false, GuardDuplicate, GuardFingerprint);
+        const string host = "127.0.0.1";
+        const int port = 6000;
+        var session = CreateSession(host, port, $"{host}:{port}", isPersisted: false);
         Servers.Add(session);
         ActiveServer = session;
     }
@@ -165,14 +188,11 @@ public partial class MainWindowViewModel : ViewModelBase
         await server.DisconnectAsync();
     }
 
-    // Диалог переименования — это забота View, а не ViewModel, поэтому здесь только
-    // просьба его показать; MainWindow.axaml.cs подписывается и сам открывает окно.
-    public event Action<ServerSessionViewModel>? RenameRequested;
-
-    [RelayCommand]
-    private void RenameServer(ServerSessionViewModel server) => RenameRequested?.Invoke(server);
-
-    // Буфер обмена — тоже забота View (нужен TopLevel), поэтому по той же схеме.
+    // Буфер обмена — забота View (нужен TopLevel), MainWindow.axaml.cs подписывается
+    // и сам достаёт TopLevel. Переименование сервера и загрузка его иконки отсюда
+    // убраны — имя теперь глобальное (см. ServerSessionViewModel.DisplayName), а
+    // иконку и настройки сервера открывают через кнопку-шестерёнку у Owner'а,
+    // события которых уже живут прямо на ServerSessionViewModel (там же контекст).
     public event Action<ServerSessionViewModel>? CopyInviteLinkRequested;
 
     [RelayCommand]

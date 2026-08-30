@@ -47,6 +47,7 @@ AppConfig LoadConfig(const std::string& path) {
     const json& authSection = RequireSection(root, "auth");
     config.auth.port = RequireField<int>(authSection, "auth", "port");
     config.auth.dbPath = RequireField<std::string>(authSection, "auth", "dbPath");
+    config.auth.avatarDir = RequireField<std::string>(authSection, "auth", "avatarDir");
 
     const json& roomSection = RequireSection(root, "room");
     config.room.port = RequireField<int>(roomSection, "room", "port");
@@ -67,6 +68,15 @@ AppConfig LoadConfig(const std::string& path) {
     const json& tlsSection = RequireSection(gatewaySection, "tls");
     config.gateway.tls.certPath = RequireField<std::string>(tlsSection, "gateway.tls", "certPath");
     config.gateway.tls.keyPath = RequireField<std::string>(tlsSection, "gateway.tls", "keyPath");
+
+    const json& rateLimitSection = RequireSection(gatewaySection, "rateLimit");
+    config.gateway.rateLimit.messagesPerSecond = RequireField<double>(rateLimitSection, "gateway.rateLimit", "messagesPerSecond");
+    config.gateway.rateLimit.messageBurst = RequireField<double>(rateLimitSection, "gateway.rateLimit", "messageBurst");
+    config.gateway.rateLimit.typingPerSecond = RequireField<double>(rateLimitSection, "gateway.rateLimit", "typingPerSecond");
+    config.gateway.rateLimit.typingBurst = RequireField<double>(rateLimitSection, "gateway.rateLimit", "typingBurst");
+
+    config.gateway.avatarMaxSizeBytes = RequireField<int>(gatewaySection, "gateway", "avatarMaxSizeBytes");
+    config.gateway.serverIconPath = RequireField<std::string>(gatewaySection, "gateway", "serverIconPath");
 
     return config;
 }

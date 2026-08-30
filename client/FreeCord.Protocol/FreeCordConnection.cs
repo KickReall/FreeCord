@@ -68,6 +68,10 @@ public sealed class FreeCordConnection : IAsyncDisposable
     public event Action<RoomCreatedNotification>? RoomCreated;
     public event Action<UserRegisteredNotification>? UserRegistered;
     public event Action<RoomCreateResponse>? RoomCreateResponseReceived;
+    public event Action<RoomUpdatedNotification>? RoomUpdated;
+    public event Action<StatusResponse>? RoomUpdateResponseReceived;
+    public event Action<RoomDeletedNotification>? RoomDeleted;
+    public event Action<StatusResponse>? RoomDeleteResponseReceived;
     public event Action<RoomListResponse>? RoomListReceived;
     public event Action<StatusResponse>? JoinResponseReceived;
     public event Action<StatusResponse>? LeaveResponseReceived;
@@ -93,6 +97,12 @@ public sealed class FreeCordConnection : IAsyncDisposable
     public event Action<UserListResponse>? UserListReceived;
     public event Action<StatusResponse>? BanUserSessionResponseReceived;
     public event Action<StatusResponse>? DeleteUserResponseReceived;
+    public event Action<AvatarUploadResponse>? AvatarUploadResponseReceived;
+    public event Action<AvatarFetchResponse>? AvatarFetchResponseReceived;
+    public event Action<AvatarUploadResponse>? ServerIconUploadResponseReceived;
+    public event Action<ServerIconResponse>? ServerIconFetchResponseReceived;
+    public event Action<ServerInfoResponse>? ServerInfoResponseReceived;
+    public event Action<StatusResponse>? SetServerInfoResponseReceived;
     public event Action<BroadcastTextMessage>? MessageReceived;
     public event Action<TypingNotification>? TypingReceived;
     public event Action<UserPresence>? UserJoined;
@@ -243,6 +253,18 @@ public sealed class FreeCordConnection : IAsyncDisposable
             case MessageType.RoomCreated:
                 RoomCreated?.Invoke(RoomCreatedNotification.Deserialize(frame.Payload));
                 break;
+            case MessageType.RoomUpdated:
+                RoomUpdated?.Invoke(RoomUpdatedNotification.Deserialize(frame.Payload));
+                break;
+            case MessageType.RoomUpdateResponse:
+                RoomUpdateResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.RoomDeleted:
+                RoomDeleted?.Invoke(RoomDeletedNotification.Deserialize(frame.Payload));
+                break;
+            case MessageType.RoomDeleteResponse:
+                RoomDeleteResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
             case MessageType.RoomCreateResponse:
                 RoomCreateResponseReceived?.Invoke(RoomCreateResponse.Deserialize(frame.Payload));
                 break;
@@ -339,6 +361,24 @@ public sealed class FreeCordConnection : IAsyncDisposable
             case MessageType.TypingBroadcast:
                 TypingReceived?.Invoke(TypingNotification.Deserialize(frame.Payload));
                 break;
+            case MessageType.AvatarUploadResponse:
+                AvatarUploadResponseReceived?.Invoke(AvatarUploadResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.AvatarFetchResponse:
+                AvatarFetchResponseReceived?.Invoke(AvatarFetchResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.ServerIconUploadResponse:
+                ServerIconUploadResponseReceived?.Invoke(AvatarUploadResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.ServerIconFetchResponse:
+                ServerIconFetchResponseReceived?.Invoke(ServerIconResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.ServerInfoResponse:
+                ServerInfoResponseReceived?.Invoke(ServerInfoResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.SetServerInfoResponse:
+                SetServerInfoResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
         }
     }
 
@@ -350,8 +390,14 @@ public sealed class FreeCordConnection : IAsyncDisposable
     public Task RegisterAsync(string username, string password) =>
         SendAsync(MessageType.RegisterRequest, new AuthRequest { Username = username, Password = password }.Serialize());
 
-    public Task CreateRoomAsync(string name) =>
-        SendAsync(MessageType.RoomCreateRequest, new RoomCreateRequest { Name = name }.Serialize());
+    public Task CreateRoomAsync(string name, RoomType type = RoomType.Text) =>
+        SendAsync(MessageType.RoomCreateRequest, new RoomCreateRequest { Name = name, Type = type }.Serialize());
+
+    public Task UpdateRoomAsync(long roomId, string name) =>
+        SendAsync(MessageType.RoomUpdateRequest, new RoomUpdateRequest { RoomId = roomId, Name = name }.Serialize());
+
+    public Task DeleteRoomAsync(long roomId) =>
+        SendAsync(MessageType.RoomDeleteRequest, new RoomDeleteRequest { RoomId = roomId }.Serialize());
 
     public Task ListRoomsAsync() => SendAsync(MessageType.RoomListRequest);
 
@@ -427,6 +473,22 @@ public sealed class FreeCordConnection : IAsyncDisposable
 
     public Task DeleteUserAsync(long userId) =>
         SendAsync(MessageType.DeleteUserRequest, new DeleteUserRequest { UserId = userId }.Serialize());
+
+    public Task UploadAvatarAsync(byte[] data) =>
+        SendAsync(MessageType.AvatarUploadRequest, new AvatarBytesRequest { Data = data }.Serialize());
+
+    public Task FetchAvatarAsync(long userId) =>
+        SendAsync(MessageType.AvatarFetchRequest, new AvatarFetchRequest { UserId = userId }.Serialize());
+
+    public Task UploadServerIconAsync(byte[] data) =>
+        SendAsync(MessageType.ServerIconUploadRequest, new AvatarBytesRequest { Data = data }.Serialize());
+
+    public Task FetchServerIconAsync() => SendAsync(MessageType.ServerIconFetchRequest);
+
+    public Task FetchServerInfoAsync() => SendAsync(MessageType.ServerInfoRequest);
+
+    public Task SetServerInfoAsync(string name, string description) =>
+        SendAsync(MessageType.SetServerInfoRequest, new SetServerInfoRequest { Name = name, Description = description }.Serialize());
 
     public async ValueTask DisposeAsync()
     {

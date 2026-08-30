@@ -14,7 +14,7 @@ void HandleCreate(socket_t sock, RoomRepository& repo, const Frame& frame) {
     std::cout << "[room] CreateRoom name=" << request.name << std::endl;
 
     RoomCreateResponsePayload response;
-    int64_t roomId = repo.CreateRoom(request.name);
+    int64_t roomId = repo.CreateRoom(request.name, static_cast<uint8_t>(request.type));
     if (roomId == -1) {
         response.status = 1;
         std::cout << "[room] Create failed: name taken" << std::endl;
@@ -25,6 +25,33 @@ void HandleCreate(socket_t sock, RoomRepository& repo, const Frame& frame) {
         std::cout << "[room] Room created, id=" << roomId << std::endl;
     }
     SendFrame(sock, static_cast<uint16_t>(MessageType::RoomCreateResponse), frame.sequence, response.Serialize());
+}
+
+void HandleUpdate(socket_t sock, RoomRepository& repo, const Frame& frame) {
+    auto request = RoomUpdateRequestPayload::Deserialize(frame.payload);
+    std::cout << "[room] UpdateRoom roomId=" << request.roomId << " name=" << request.name << std::endl;
+
+    StatusResponsePayload response;
+    switch (repo.UpdateRoomName(request.roomId, request.name)) {
+    case RoomUpdateResult::Ok:         response.status = 0; break;
+    case RoomUpdateResult::NotFound:   response.status = 1; break;
+    case RoomUpdateResult::NameTaken:  response.status = 2; break;
+    case RoomUpdateResult::SystemRoom: response.status = 3; break;
+    }
+    SendFrame(sock, static_cast<uint16_t>(MessageType::RoomUpdateResponse), frame.sequence, response.Serialize());
+}
+
+void HandleDelete(socket_t sock, RoomRepository& repo, const Frame& frame) {
+    auto request = RoomDeleteRequestPayload::Deserialize(frame.payload);
+    std::cout << "[room] DeleteRoom roomId=" << request.roomId << std::endl;
+
+    StatusResponsePayload response;
+    switch (repo.DeleteRoom(request.roomId)) {
+    case RoomDeleteResult::Ok:         response.status = 0; break;
+    case RoomDeleteResult::NotFound:   response.status = 1; break;
+    case RoomDeleteResult::SystemRoom: response.status = 2; break;
+    }
+    SendFrame(sock, static_cast<uint16_t>(MessageType::RoomDeleteResponse), frame.sequence, response.Serialize());
 }
 
 void HandleJoin(socket_t sock, RoomRepository& repo, const Frame& frame) {
@@ -188,6 +215,8 @@ void HandleClient(socket_t sock, RoomRepository& repo) {
 
     switch (static_cast<MessageType>(frame.messageType)) {
     case MessageType::RoomCreateRequest:            HandleCreate(sock, repo, frame);  break;
+    case MessageType::RoomUpdateRequest:            HandleUpdate(sock, repo, frame);  break;
+    case MessageType::RoomDeleteRequest:            HandleDelete(sock, repo, frame);  break;
     case MessageType::RoomJoinRequest:               HandleJoin(sock, repo, frame);    break;
     case MessageType::RoomLeaveRequest:              HandleLeave(sock, repo, frame);   break;
     case MessageType::RoomListRequest:               HandleList(sock, repo, frame);    break;

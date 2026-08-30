@@ -2,11 +2,15 @@
 #include "MigrationRunner.h"
 #include "SqlFile.h"
 #include "Permissions.h"
+#include <filesystem>
+#include <fstream>
 
-UserRepository::UserRepository(const std::string& dbPath)
+UserRepository::UserRepository(const std::string& dbPath, const std::string& avatarDir)
     : m_db(dbPath, SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE)
+    , m_avatarDir(avatarDir)
 {
     m_db.exec("PRAGMA foreign_keys = ON");
+    std::filesystem::create_directories(m_avatarDir);
 
     ApplyMigrations(m_db, LoadMigrationsFromDirectory("db/auth/migrations"));
 
@@ -27,6 +31,14 @@ UserRepository::UserRepository(const std::string& dbPath)
     m_sqlUnbanIp = LoadSqlFile("db/auth/queries/unban_ip.sql");
     m_sqlIsIpBanned = LoadSqlFile("db/auth/queries/is_ip_banned.sql");
     m_sqlListBannedIps = LoadSqlFile("db/auth/queries/list_banned_ips.sql");
+    m_sqlBumpAvatarVersion = LoadSqlFile("db/auth/queries/bump_avatar_version.sql");
+    m_sqlGetAvatarVersion = LoadSqlFile("db/auth/queries/get_avatar_version.sql");
+}
+
+namespace {
+std::string AvatarFilePath(const std::string& avatarDir, int64_t userId) {
+    return avatarDir + "/" + std::to_string(userId) + ".bin";
+}
 }
 
 int64_t UserRepository::CreateUser(const std::string& username, const std::string& passwordHash, const std::string& passwordSalt) {
@@ -133,11 +145,12 @@ RoleOpResult UserRepository::UpdateRole(int64_t roleId, const std::string& name,
     std::string currentName = findQuery.getColumn(1).getString();
 
     if (isSystem) {
-        // Системные роли нельзя переименовывать; admin вообще нельзя редактировать —
-        // его права не хранятся маской и правки ни на что не повлияют (см. Permissions.h).
-        // displayName — чисто косметическое поле, но эту же блокировку применяем и к
-        // нему, чтобы не плодить отдельное исключение из общего правила "admin неизменен".
-        if (roleId == kAdminRoleId || name != currentName) {
+        // Системные роли нельзя переименовывать; admin и owner вообще нельзя
+        // редактировать — их сила не хранится маской permissions (см. Permissions.h),
+        // и правки туда ни на что не повлияют, но при этом обманчиво выглядели бы
+        // применёнными. displayName — чисто косметическое поле, но эту же блокировку
+        // применяем и к нему, чтобы не плодить отдельное исключение из общего правила.
+        if (roleId == kAdminRoleId || roleId == kOwnerRoleId || name != currentName) {
             return RoleOpResult::SystemRole;
         }
     }
@@ -217,6 +230,7 @@ std::vector<UserSummary> UserRepository::ListUsers() {
         UserSummary user;
         user.id = query.getColumn(0).getInt64();
         user.username = query.getColumn(1).getString();
+        user.avatarVersion = query.getColumn(2).getInt64();
         result.push_back(std::move(user));
     }
 
@@ -262,5 +276,39 @@ std::vector<std::string> UserRepository::ListBannedIps() {
     while (query.executeStep()) {
         result.push_back(query.getColumn(0).getString());
     }
+    return result;
+}
+
+int64_t UserRepository::SetAvatar(int64_t userId, const std::vector<uint8_t>& data) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    std::ofstream file(AvatarFilePath(m_avatarDir, userId), std::ios::binary | std::ios::trunc);
+    if (!file) return -1;
+    file.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+    file.close();
+
+    SQLite::Statement bump(m_db, m_sqlBumpAvatarVersion);
+    bump.bind(1, userId);
+    if (bump.exec() == 0) return -1;  // пользователь не найден
+
+    SQLite::Statement readBack(m_db, m_sqlGetAvatarVersion);
+    readBack.bind(1, userId);
+    readBack.executeStep();
+    return readBack.getColumn(0).getInt64();
+}
+
+AvatarData UserRepository::GetAvatar(int64_t userId) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    AvatarData result;
+
+    SQLite::Statement query(m_db, m_sqlGetAvatarVersion);
+    query.bind(1, userId);
+    if (!query.executeStep()) return result;  // пользователь не найден
+    result.version = query.getColumn(0).getInt64();
+    if (result.version == 0) return result;  // версия есть, аватарки — нет
+
+    std::ifstream file(AvatarFilePath(m_avatarDir, userId), std::ios::binary);
+    if (!file) return result;  // версия ненулевая, а файла почему-то нет — отдаём как "нет аватарки"
+    result.bytes.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
     return result;
 }
