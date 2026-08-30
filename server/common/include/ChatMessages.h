@@ -57,6 +57,49 @@ struct BroadcastTextMessagePayload {
     }
 };
 
+// Клиент -> Gateway: "я печатаю" в этой комнате. senderId/senderName в broadcast
+// берутся из сессии (как и в ClientTextMessagePayload) — клиент их не присылает.
+struct TypingRequestPayload {
+    int64_t roomId = 0;
+
+    std::vector<uint8_t> Serialize() const {
+        std::vector<uint8_t> buffer;
+        WriteScalar(buffer, roomId);
+        return buffer;
+    }
+    static TypingRequestPayload Deserialize(const std::vector<uint8_t>& buffer) {
+        size_t offset = 0;
+        TypingRequestPayload r;
+        r.roomId = ReadScalar<int64_t>(buffer, offset);
+        return r;
+    }
+};
+
+// Gateway -> остальным участникам комнаты (кроме автора): кто-то печатает.
+// Разовое уведомление без явного "перестал печатать" — клиент сам гасит индикатор
+// по таймауту, если новое TypingBroadcast для этого senderId не пришло вовремя.
+struct TypingBroadcastPayload {
+    int64_t roomId = 0;
+    int64_t senderId = 0;
+    std::string senderName;
+
+    std::vector<uint8_t> Serialize() const {
+        std::vector<uint8_t> buffer;
+        WriteScalar(buffer, roomId);
+        WriteScalar(buffer, senderId);
+        WriteString(buffer, senderName);
+        return buffer;
+    }
+    static TypingBroadcastPayload Deserialize(const std::vector<uint8_t>& buffer) {
+        size_t offset = 0;
+        TypingBroadcastPayload r;
+        r.roomId = ReadScalar<int64_t>(buffer, offset);
+        r.senderId = ReadScalar<int64_t>(buffer, offset);
+        r.senderName = ReadString(buffer, offset);
+        return r;
+    }
+};
+
 // Gateway -> клиенты комнаты: кто-то вошёл или вышел
 struct UserPresencePayload {
     int64_t roomId = 0;

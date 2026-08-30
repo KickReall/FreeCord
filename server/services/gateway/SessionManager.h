@@ -6,6 +6,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "Transport.h"
 #include "PlatformSocket.h"
 #include <atomic>
 
@@ -13,21 +14,40 @@ struct Session {
     uint64_t sessionId = 0;
     int64_t userId = 0;
     std::string username;
-    socket_t socket = kInvalidSocket;
+    std::shared_ptr<ITransport> transport;
     std::mutex sendMutex;
+
+    // IP клиента и сырой сокет — нужны для бана по IP: найти сессии с этим адресом
+    // и прервать их немедленно через ShutdownSocket, независимо от TLS-обёртки.
+    // Оба пишутся один раз при создании сессии, как username — без мьютекса.
+    std::string remoteIp;
+    socket_t rawSocket = kInvalidSocket;
 
     // Комната, открытая пользователем сейчас. 0 = ни одной.
     // atomic — читается из чужих потоков при рассылке.
     std::atomic<int64_t> currentRoomId{ 0 };
+
+    // Эффективные права пользователя, посчитанные один раз при логине (сумма прав
+    // всех его ролей). Изменение ролей применится только после повторного логина —
+    // живое обновление сессии не реализовано.
+    std::atomic<uint32_t> permissions{ 0 };
+
+    // Id ролей пользователя — нужны, чтобы считать оверрайды прав по каналам
+    // (одной суммы permissions недостаточно, оверрайд привязан к конкретной роли).
+    // Пишется один раз при логине, как и username — без мьютекса, как и оно.
+    std::vector<int64_t> roleIds;
 };
 
 using SessionPtr = std::shared_ptr<Session>;
 
 class SessionManager {
 public:
-    SessionPtr AddSession(int64_t userId, const std::string& username, socket_t socket);
+    SessionPtr AddSession(int64_t userId, const std::string& username, std::shared_ptr<ITransport> transport,
+        const std::string& remoteIp, socket_t rawSocket);
     void RemoveSession(uint64_t sessionId);
     std::vector<SessionPtr> GetSessionsForUsers(const std::vector<int64_t>& userIds);
+    // Все сессии, подключённые с этого IP — для немедленного разрыва при бане.
+    std::vector<SessionPtr> GetSessionsForIp(const std::string& ip);
     // Все активные сессии — для рассылки глобальных событий
     std::vector<SessionPtr> GetAllSessions();
     // Все, кто сейчас открыл эту комнату

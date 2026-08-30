@@ -24,12 +24,18 @@ struct MessageConfig {
     int maxTextLength = 0;
 };
 
+struct TlsConfig {
+    std::string certPath;
+    std::string keyPath;
+};
+
 struct GatewayConfig {
     int port = 0;
     std::string serviceHost;
     int recvTimeoutMs = 0;
     int clientIdleTimeoutSec = 0;
     int serviceCallTimeoutMs = 0;
+    TlsConfig tls;
 };
 
 struct AppConfig {

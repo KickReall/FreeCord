@@ -1,14 +1,21 @@
 #include <iostream>
 #include <thread>
 #include <chrono>
+#include <memory>
+#include <algorithm>
 
 #include "PlatformSocket.h"
 #include "TcpFramer.h"
+#include "TlsContext.h"
+#include "TlsTransport.h"
 #include "ProtocolTypes.h"
 #include "AuthMessages.h"
 #include "RoomMessages.h"
 #include "MessageMessages.h"
 #include "ChatMessages.h"
+#include "RoleMessages.h"
+#include "IpBanMessages.h"
+#include "Permissions.h"
 #include "ServiceClient.h"
 #include "SessionManager.h"
 #include "Config.h"
@@ -19,16 +26,79 @@ constexpr int64_t SYSTEM_ROOM_ID = 1;
 
 SessionManager g_sessions;
 AppConfig g_config;
+std::unique_ptr<TlsContext> g_tls;
 
 struct ClientContext {
-    socket_t socket = kInvalidSocket;
+    socket_t socket = kInvalidSocket;         // нужен для SetRecvTimeout/CloseSocket — TLS работает поверх него
+    std::string remoteIp;                     // адрес клиента, захваченный на accept() — для бана по IP
+    std::shared_ptr<ITransport> transport;    // TLS-соединение с клиентом; до успешного handshake равен nullptr
     SessionPtr session;   // nullptr, пока не залогинен
 };
 
 // Потокобезопасная отправка в сессию.
 bool SendToSession(const SessionPtr& session, MessageType type, const std::vector<uint8_t>& payload) {
     std::lock_guard<std::mutex> lock(session->sendMutex);
-    return SendFrame(session->socket, static_cast<uint16_t>(type), 0, payload) == FrameResult::Ok;
+    return SendFrame(*session->transport, static_cast<uint16_t>(type), 0, payload) == FrameResult::Ok;
+}
+
+bool HasPermission(const SessionPtr& session, Permission permission) {
+    return (session->permissions.load() & static_cast<uint32_t>(permission)) != 0;
+}
+
+// Обёртки над CallService для каждого внутреннего сервиса — раньше host+порт+таймаут
+// повторялись в каждом вызове по всему файлу; теперь один источник правды на сервис.
+bool CallAuth(MessageType requestType, const std::vector<uint8_t>& payload, MessageType responseType, Frame& outResponse) {
+    return CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port, requestType, payload,
+        responseType, outResponse, g_config.gateway.serviceCallTimeoutMs);
+}
+bool CallRoom(MessageType requestType, const std::vector<uint8_t>& payload, MessageType responseType, Frame& outResponse) {
+    return CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, requestType, payload,
+        responseType, outResponse, g_config.gateway.serviceCallTimeoutMs);
+}
+bool CallMessage(MessageType requestType, const std::vector<uint8_t>& payload, MessageType responseType, Frame& outResponse) {
+    return CallService(g_config.gateway.serviceHost.c_str(), g_config.message.port, requestType, payload,
+        responseType, outResponse, g_config.gateway.serviceCallTimeoutMs);
+}
+
+// Общий паттерн большинства Handle*: не хватает прав — синтезируем "отказано" самостоятельно,
+// не трогая сервис; иначе форвардим frame.payload как есть и пересылаем ответ сервиса клиенту
+// без разбора. Возвращает сырой ответ сервиса (пустой Frame — если прав не хватило или сервис
+// недоступен), чтобы вызывающая сторона могла доразобрать его для доп. действий (кик, бан по IP).
+template <typename CallFn, typename ForbiddenPayload>
+Frame ProxyToService(ClientContext& ctx, const Frame& frame, Permission permission, CallFn call,
+    MessageType requestType, MessageType responseType, const ForbiddenPayload& forbidden) {
+    if (!HasPermission(ctx.session, permission)) {
+        SendToSession(ctx.session, responseType, forbidden.Serialize());
+        return {};
+    }
+    Frame response;
+    if (!call(requestType, frame.payload, responseType, response)) {
+        return {};
+    }
+    SendToSession(ctx.session, responseType, response.payload);
+    return response;
+}
+
+// Проверяется до TLS-хендшейка — забаненный IP не должен тратить ресурсы даже на него.
+bool IsIpBanned(const std::string& ip) {
+    IpPayload request;
+    request.ip = ip;
+
+    Frame response;
+    if (!CallAuth(MessageType::IsIpBannedRequest, request.Serialize(), MessageType::IsIpBannedResponse, response)) {
+        return false; // auth_service недоступен — не блокируем на ровном месте
+    }
+    return IpBanStatusPayload::Deserialize(response.payload).banned != 0;
+}
+
+// Немедленно обрывает все текущие сессии с этого IP (по требованию — бан должен
+// действовать сразу, а не только на будущие попытки подключиться). ShutdownSocket
+// лишь прерывает блокирующий recv() в потоке-владельце сессии — тот сам довершит
+// очистку (RemoveSession, CloseSocket) обычным путём, как при любом разрыве связи.
+void DisconnectSessionsForIp(const std::string& ip) {
+    for (const auto& session : g_sessions.GetSessionsForIp(ip)) {
+        ShutdownSocket(session->rawSocket);
+    }
 }
 
 // Разослать всем залогиненным клиентам, независимо от комнат.
@@ -51,15 +121,139 @@ int BroadcastToRoom(int64_t roomId, MessageType type, const std::vector<uint8_t>
     return delivered;
 }
 
+// Эффективные права пользователя в конкретной комнате: базовые права сессии плюс
+// оверрайды по её ролям (allow/deny из channel_role_overrides). Admin (все биты
+// в session->permissions) оверрайды не затрагивают — иначе оверрайд смог бы
+// отобрать права у суперпользователя, что ломает саму идею admin'а.
+uint32_t EffectivePermissionsInRoom(const SessionPtr& session, int64_t roomId) {
+    uint32_t base = session->permissions.load();
+    if (base == 0xFFFFFFFFu) return base;
+
+    Frame overridesResponse;
+    ChannelOverridesRequestPayload request;
+    request.roomId = roomId;
+    if (!CallRoom(MessageType::ChannelOverridesRequest, request.Serialize(), MessageType::ChannelOverridesResponse, overridesResponse)) {
+        return base; // room_service недоступен — не блокируем на ровном месте, работаем с базовыми правами
+    }
+
+    auto overrides = ChannelOverridesResponsePayload::Deserialize(overridesResponse.payload);
+
+    uint32_t allow = 0, deny = 0;
+    for (const auto& o : overrides.overrides) {
+        bool hasRole = std::find(session->roleIds.begin(), session->roleIds.end(), o.roleId) != session->roleIds.end();
+        if (!hasRole) continue;
+        allow |= o.allow;
+        deny |= o.deny;
+    }
+
+    // Явный allow хоть у одной роли побеждает deny у другой — ролевой иерархии
+    // (как у Discord) в проекте нет, поэтому используем самое простое правило.
+    return (base & ~deny) | allow;
+}
+
+// Статус модерации пользователя в комнате (бан/мут). Как и оверрайды, для admin
+// (сентинел 0xFFFFFFFF в session->permissions) не проверяется вовсе — иначе
+// любая роль с KickMembers/ManageChannelModeration могла бы запереть суперпользователя.
+ChannelModerationStatusResponsePayload GetModerationStatus(const SessionPtr& session, int64_t roomId) {
+    ChannelModerationStatusResponsePayload result;
+    if (session->permissions.load() == 0xFFFFFFFFu) return result;
+
+    RoomMembershipRequestPayload request;
+    request.roomId = roomId;
+    request.userId = session->userId;
+
+    Frame response;
+    if (!CallRoom(MessageType::ChannelModerationStatusRequest, request.Serialize(), MessageType::ChannelModerationStatusResponse, response)) {
+        return result; // room_service недоступен — не блокируем на ровном месте
+    }
+    return ChannelModerationStatusResponsePayload::Deserialize(response.payload);
+}
+
+// Владелец (kOwnerRoleId) неприкосновенен для любого действия, нацеленного на него
+// извне — даже от admin. Проверяем через GetUserPermissionsRequest (тот же internal
+// вызов, что и при логине), а не через кэш сессии инициатора: цель действия обычно
+// не совпадает с сессией, которая его выполняет, и может быть офлайн в момент проверки.
+bool IsTargetOwner(int64_t userId) {
+    GetUserPermissionsRequestPayload request;
+    request.userId = userId;
+    Frame response;
+    if (!CallAuth(MessageType::GetUserPermissionsRequest, request.Serialize(), MessageType::GetUserPermissionsResponse, response)) {
+        return false; // auth_service недоступен — не блокируем на ровном месте
+    }
+    auto perms = MyPermissionsPayload::Deserialize(response.payload);
+    return std::find(perms.roleIds.begin(), perms.roleIds.end(), kOwnerRoleId) != perms.roleIds.end();
+}
+
+// Права кэшируются в сессии на момент логина и обычно не пересчитываются заново
+// (см. Session::permissions) — но после изменения чужих ролей через RoleAssign/
+// RoleRemove это молчаливое устаревание было бы прямо видно (пользователю с новой
+// ролью admin пришлось бы перезайти). Поэтому именно эти два места принудительно
+// обновляют кэш и досылают MyPermissions, если пользователь сейчас онлайн.
+void RefreshPermissionsIfOnline(int64_t userId) {
+    auto sessions = g_sessions.GetSessionsForUsers({ userId });
+    if (sessions.empty()) return;
+
+    GetUserPermissionsRequestPayload request;
+    request.userId = userId;
+    Frame response;
+    if (!CallAuth(MessageType::GetUserPermissionsRequest, request.Serialize(), MessageType::GetUserPermissionsResponse, response)) {
+        return;
+    }
+    auto perms = MyPermissionsPayload::Deserialize(response.payload);
+    for (const auto& session : sessions) {
+        session->permissions.store(perms.permissions);
+        session->roleIds = perms.roleIds;
+        SendToSession(session, MessageType::MyPermissions, perms.Serialize());
+    }
+}
+
+// auth ничего не знает о живых TCP-сессиях (у него только БД) — online проставляет
+// только gateway, сверяясь с SessionManager. false при недоступном auth — как и
+// раньше у HandleUserList, молча не отвечаем, а не подсовываем пустой список.
+bool FetchUserListWithPresence(UserListResponsePayload& outResult) {
+    Frame userResponse;
+    if (!CallAuth(MessageType::UserListRequest, {}, MessageType::UserListResponse, userResponse)) {
+        return false;
+    }
+    outResult = UserListResponsePayload::Deserialize(userResponse.payload);
+    for (auto& user : outResult.users) {
+        user.online = !g_sessions.GetSessionsForUsers({ user.id }).empty();
+    }
+    return true;
+}
+
+// Досылает актуальный список пользователей всем залогиненным клиентам — используется
+// после логина/дисконнекта (поменялась online) и после удаления аккаунта (пользователь
+// должен пропасть из панели участников у всех, не только у того, кто его удалил).
+void BroadcastUserListToAll() {
+    UserListResponsePayload result;
+    if (!FetchUserListWithPresence(result)) return;
+    BroadcastToAll(MessageType::UserListResponse, result.Serialize());
+}
+
+// Если пользователь сейчас онлайн и держит открытой эту комнату — выкинуть его
+// немедленно (используется после кика, чтобы бан подействовал сразу, а не только
+// при следующей попытке зайти).
+void ForceLeaveRoomIfOnline(int64_t userId, int64_t roomId) {
+    for (const auto& session : g_sessions.GetSessionsForUsers({ userId })) {
+        int64_t expected = roomId;
+        if (session->currentRoomId.compare_exchange_strong(expected, 0)) {
+            RoomMembersRequestPayload notice;
+            notice.roomId = roomId;
+            SendToSession(session, MessageType::ChannelKicked, notice.Serialize());
+        }
+    }
+}
+
 void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
     auto request = AuthRequestPayload::Deserialize(frame.payload);
 
     Frame authResponse;
-    bool ok = CallService(g_config.gateway.serviceHost.c_str(), g_config.auth.port,
+    bool ok = CallAuth(
         isRegister ? MessageType::RegisterRequest : MessageType::AuthRequest,
         frame.payload,
         isRegister ? MessageType::RegisterResponse : MessageType::AuthResponse,
-        authResponse, g_config.gateway.serviceCallTimeoutMs);
+        authResponse);
 
     AuthResponsePayload response;
     if (!ok) {
@@ -70,10 +264,26 @@ void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
         response = AuthResponsePayload::Deserialize(authResponse.payload);
 
         if (response.status == 0 && !isRegister) {
-            ctx.session = g_sessions.AddSession(response.userId, request.username, ctx.socket);
+            ctx.session = g_sessions.AddSession(response.userId, request.username, ctx.transport, ctx.remoteIp, ctx.socket);
             response.sessionId = ctx.session->sessionId;
             std::cout << "[gateway] '" << request.username << "' logged in (userId="
                 << response.userId << "), online=" << g_sessions.OnlineCount() << std::endl;
+
+            // Права считаются при логине и кэшируются в сессии — но не намертво:
+            // RoleAssign/RoleRemove пересчитывают их принудительно через
+            // RefreshPermissionsIfOnline, если целевой пользователь сейчас в сети.
+            Frame permResponse;
+            GetUserPermissionsRequestPayload permRequest;
+            permRequest.userId = response.userId;
+            if (CallAuth(MessageType::GetUserPermissionsRequest, permRequest.Serialize(),
+                MessageType::GetUserPermissionsResponse, permResponse)) {
+                auto perms = MyPermissionsPayload::Deserialize(permResponse.payload);
+                ctx.session->permissions.store(perms.permissions);
+                ctx.session->roleIds = perms.roleIds;
+                SendToSession(ctx.session, MessageType::MyPermissions, perms.Serialize());
+            }
+
+            BroadcastUserListToAll(); // presence поменялась — досылаем всем свежий список
         }
 
         // Новый пользователь — пишем в системную комнату и уведомляем всех
@@ -87,9 +297,8 @@ void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
             sysMessage.text = text;
 
             Frame saveResponse;
-            if (CallService(g_config.gateway.serviceHost.c_str(), g_config.message.port, MessageType::SendMessageRequest,
-                sysMessage.Serialize(), MessageType::SendMessageResponse, saveResponse,
-                g_config.gateway.serviceCallTimeoutMs)) {
+            if (CallMessage(MessageType::SendMessageRequest, sysMessage.Serialize(),
+                MessageType::SendMessageResponse, saveResponse)) {
 
                 auto saved = SendMessageResponsePayload::Deserialize(saveResponse.payload);
                 if (saved.status == 0) {
@@ -114,7 +323,7 @@ void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
         }
     }
 
-    SendFrame(ctx.socket,
+    SendFrame(*ctx.transport,
         static_cast<uint16_t>(isRegister ? MessageType::RegisterResponse : MessageType::AuthResponse),
         frame.sequence, response.Serialize());
 }
@@ -122,6 +331,24 @@ void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
 // Выбор комнаты: просто переключение в сессии, без записей в БД.
 void HandleSelectRoom(ClientContext& ctx, const Frame& frame) {
     auto request = RoomMembershipRequestPayload::Deserialize(frame.payload);
+
+    if ((EffectivePermissionsInRoom(ctx.session, request.roomId) & static_cast<uint32_t>(Permission::OpenChannel)) == 0) {
+        std::cout << "[gateway] userId=" << ctx.session->userId
+            << " lacks OpenChannel in room " << request.roomId << std::endl;
+        StatusResponsePayload forbidden;
+        forbidden.status = 254;
+        SendToSession(ctx.session, MessageType::JoinRoomResponse, forbidden.Serialize());
+        return;
+    }
+
+    if (GetModerationStatus(ctx.session, request.roomId).banned) {
+        std::cout << "[gateway] userId=" << ctx.session->userId
+            << " is banned from room " << request.roomId << std::endl;
+        StatusResponsePayload forbidden;
+        forbidden.status = 253; // забанен в этом канале
+        SendToSession(ctx.session, MessageType::JoinRoomResponse, forbidden.Serialize());
+        return;
+    }
 
     int64_t previous = ctx.session->currentRoomId.exchange(request.roomId);
 
@@ -143,22 +370,25 @@ void HandleLeaveRoom(ClientContext& ctx, const Frame& frame) {
 
 void HandleRoomList(ClientContext& ctx, const Frame& frame) {
     Frame roomResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::RoomListRequest, {},
-        MessageType::RoomListResponse, roomResponse, g_config.gateway.serviceCallTimeoutMs)) {
+    if (!CallRoom(MessageType::RoomListRequest, {}, MessageType::RoomListResponse, roomResponse)) {
         return;
     }
-    SendToSession(ctx.session, MessageType::RoomListResponse, roomResponse.payload);
+
+    // Комнаты без ViewChannel у пользователя в списке не показываем.
+    auto allRooms = RoomListResponsePayload::Deserialize(roomResponse.payload);
+    RoomListResponsePayload visibleRooms;
+    for (const auto& room : allRooms.rooms) {
+        if (EffectivePermissionsInRoom(ctx.session, room.id) & static_cast<uint32_t>(Permission::ViewChannel)) {
+            visibleRooms.rooms.push_back(room);
+        }
+    }
+    SendToSession(ctx.session, MessageType::RoomListResponse, visibleRooms.Serialize());
 }
 
 void HandleRoomCreate(ClientContext& ctx, const Frame& frame) {
-    Frame roomResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.room.port, MessageType::RoomCreateRequest, frame.payload,
-        MessageType::RoomCreateResponse, roomResponse, g_config.gateway.serviceCallTimeoutMs)) {
-        return;
-    }
-
-    // Ответ создателю
-    SendToSession(ctx.session, MessageType::RoomCreateResponse, roomResponse.payload);
+    Frame roomResponse = ProxyToService(ctx, frame, Permission::ManageChannel, CallRoom,
+        MessageType::RoomCreateRequest, MessageType::RoomCreateResponse, RoomCreateResponsePayload{254});
+    if (roomResponse.messageType == 0) return; // отказано или сервис недоступен — ProxyToService уже ответил клиенту
 
     // Если создание удалось — уведомляем остальных
     auto created = RoomCreateResponsePayload::Deserialize(roomResponse.payload);
@@ -177,9 +407,20 @@ void HandleRoomCreate(ClientContext& ctx, const Frame& frame) {
 }
 
 void HandleHistory(ClientContext& ctx, const Frame& frame) {
+    auto request = HistoryRequestPayload::Deserialize(frame.payload);
+
+    // Раньше истории отдавались без проверки прав вовсе — та же дыра, которую
+    // JoinRoom и TextMessage уже закрывают: без OpenChannel читать содержимое нельзя.
+    if ((EffectivePermissionsInRoom(ctx.session, request.roomId) & static_cast<uint32_t>(Permission::OpenChannel)) == 0) {
+        std::cout << "[gateway] userId=" << ctx.session->userId
+            << " lacks OpenChannel in room " << request.roomId << " (history)" << std::endl;
+        HistoryResponsePayload forbidden; // пустая история — не выдаём даже намёк на содержимое
+        SendToSession(ctx.session, MessageType::HistoryResponse, forbidden.Serialize());
+        return;
+    }
+
     Frame historyResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.message.port, MessageType::HistoryRequest, frame.payload,
-        MessageType::HistoryResponse, historyResponse, g_config.gateway.serviceCallTimeoutMs)) {
+    if (!CallMessage(MessageType::HistoryRequest, frame.payload, MessageType::HistoryResponse, historyResponse)) {
         return;
     }
     SendToSession(ctx.session, MessageType::HistoryResponse, historyResponse.payload);
@@ -196,6 +437,18 @@ void HandleTextMessage(ClientContext& ctx, const Frame& frame) {
         return;
     }
 
+    if ((EffectivePermissionsInRoom(ctx.session, clientMessage.roomId) & static_cast<uint32_t>(Permission::SendMessages)) == 0) {
+        std::cout << "[gateway] userId=" << ctx.session->userId
+            << " lacks SendMessages in room " << clientMessage.roomId << std::endl;
+        return;
+    }
+
+    if (GetModerationStatus(ctx.session, clientMessage.roomId).muted) {
+        std::cout << "[gateway] userId=" << ctx.session->userId
+            << " is muted in room " << clientMessage.roomId << std::endl;
+        return;
+    }
+
     // 1. Сохранить в message_service
     SendMessageRequestPayload saveRequest;
     saveRequest.roomId = clientMessage.roomId;
@@ -204,9 +457,7 @@ void HandleTextMessage(ClientContext& ctx, const Frame& frame) {
     saveRequest.text = clientMessage.text;
 
     Frame saveResponse;
-    if (!CallService(g_config.gateway.serviceHost.c_str(), g_config.message.port, MessageType::SendMessageRequest,
-        saveRequest.Serialize(), MessageType::SendMessageResponse, saveResponse,
-        g_config.gateway.serviceCallTimeoutMs)) {
+    if (!CallMessage(MessageType::SendMessageRequest, saveRequest.Serialize(), MessageType::SendMessageResponse, saveResponse)) {
         std::cout << "[gateway] message_service unavailable" << std::endl;
         return;
     }
@@ -233,19 +484,303 @@ void HandleTextMessage(ClientContext& ctx, const Frame& frame) {
         << "' delivered to " << delivered << " online users" << std::endl;
 }
 
-void ClientThread(socket_t clientSocket) {
+// "Я печатаю" — те же ограничения, что и у реальной отправки (открытая комната,
+// SendMessages, не в муте), иначе кикнутый/замьюченный мог бы спамить индикатором.
+// Разовое уведомление без ack и без явного "перестал печатать" — клиент сам гасит
+// индикатор по таймауту, если новое TypingBroadcast для этого senderId не пришло.
+void HandleTyping(ClientContext& ctx, const Frame& frame) {
+    auto request = TypingRequestPayload::Deserialize(frame.payload);
+
+    if (ctx.session->currentRoomId.load() != request.roomId) return;
+    if ((EffectivePermissionsInRoom(ctx.session, request.roomId) & static_cast<uint32_t>(Permission::SendMessages)) == 0) return;
+    if (GetModerationStatus(ctx.session, request.roomId).muted) return;
+
+    TypingBroadcastPayload broadcast;
+    broadcast.roomId = request.roomId;
+    broadcast.senderId = ctx.session->userId;
+    broadcast.senderName = ctx.session->username;
+
+    BroadcastToRoom(request.roomId, MessageType::TypingBroadcast, broadcast.Serialize(), ctx.session->userId);
+}
+
+// Список ролей виден любому залогиненному пользователю — сама по себе не секрет,
+// поэтому единственная из всей группы обходится без ProxyToService.
+void HandleRoleList(ClientContext& ctx, const Frame& frame) {
+    Frame roleResponse;
+    if (!CallAuth(MessageType::RoleListRequest, {}, MessageType::RoleListResponse, roleResponse)) {
+        return;
+    }
+    SendToSession(ctx.session, MessageType::RoleListResponse, roleResponse.payload);
+}
+
+// Список пользователей виден любому залогиненному — как и список ролей, сам по
+// себе не секрет (нужен всем для панели участников), поэтому без ProxyToService.
+void HandleUserList(ClientContext& ctx, const Frame& frame) {
+    UserListResponsePayload result;
+    if (!FetchUserListWithPresence(result)) return;
+    SendToSession(ctx.session, MessageType::UserListResponse, result.Serialize());
+}
+
+void HandleRoleCreate(ClientContext& ctx, const Frame& frame) {
+    ProxyToService(ctx, frame, Permission::ManageRoles, CallAuth,
+        MessageType::RoleCreateRequest, MessageType::RoleCreateResponse, RoleCreateResponsePayload{254});
+}
+
+void HandleRoleUpdate(ClientContext& ctx, const Frame& frame) {
+    ProxyToService(ctx, frame, Permission::ManageRoles, CallAuth,
+        MessageType::RoleUpdateRequest, MessageType::RoleUpdateResponse, StatusResponsePayload{254});
+}
+
+void HandleRoleDelete(ClientContext& ctx, const Frame& frame) {
+    ProxyToService(ctx, frame, Permission::ManageRoles, CallAuth,
+        MessageType::RoleDeleteRequest, MessageType::RoleDeleteResponse, StatusResponsePayload{254});
+}
+
+// Не через ProxyToService, как остальные Role*: нужно разобрать userId ДО форварда,
+// чтобы проверить неприкосновенность владельца, и обновить кэш прав ПОСЛЕ успеха.
+void HandleRoleAssign(ClientContext& ctx, const Frame& frame) {
+    if (!HasPermission(ctx.session, Permission::ManageRoles)) {
+        SendToSession(ctx.session, MessageType::RoleAssignResponse, StatusResponsePayload{254}.Serialize());
+        return;
+    }
+    auto request = RoleMembershipRequestPayload::Deserialize(frame.payload);
+    if (request.userId != ctx.session->userId && IsTargetOwner(request.userId)) {
+        SendToSession(ctx.session, MessageType::RoleAssignResponse, StatusResponsePayload{254}.Serialize());
+        return;
+    }
+
+    Frame authResponse;
+    if (!CallAuth(MessageType::RoleAssignRequest, frame.payload, MessageType::RoleAssignResponse, authResponse)) return;
+    SendToSession(ctx.session, MessageType::RoleAssignResponse, authResponse.payload);
+
+    if (StatusResponsePayload::Deserialize(authResponse.payload).status == 0) {
+        RefreshPermissionsIfOnline(request.userId);
+    }
+}
+
+void HandleRoleRemove(ClientContext& ctx, const Frame& frame) {
+    if (!HasPermission(ctx.session, Permission::ManageRoles)) {
+        SendToSession(ctx.session, MessageType::RoleRemoveResponse, StatusResponsePayload{254}.Serialize());
+        return;
+    }
+    auto request = RoleMembershipRequestPayload::Deserialize(frame.payload);
+    if (request.userId != ctx.session->userId && IsTargetOwner(request.userId)) {
+        SendToSession(ctx.session, MessageType::RoleRemoveResponse, StatusResponsePayload{254}.Serialize());
+        return;
+    }
+
+    Frame authResponse;
+    if (!CallAuth(MessageType::RoleRemoveRequest, frame.payload, MessageType::RoleRemoveResponse, authResponse)) return;
+    SendToSession(ctx.session, MessageType::RoleRemoveResponse, authResponse.payload);
+
+    if (StatusResponsePayload::Deserialize(authResponse.payload).status == 0) {
+        RefreshPermissionsIfOnline(request.userId);
+    }
+}
+
+void HandleGetChannelOverrides(ClientContext& ctx, const Frame& frame) {
+    // Пустой список (не HasPermission-отказ явным статусом) — не отдаём даже намёк
+    // на настройку канала тому, кому не положено её видеть.
+    ProxyToService(ctx, frame, Permission::ManageChannel, CallRoom,
+        MessageType::ChannelOverridesRequest, MessageType::ChannelOverridesResponse, ChannelOverridesResponsePayload{});
+}
+
+void HandleSetChannelOverride(ClientContext& ctx, const Frame& frame) {
+    ProxyToService(ctx, frame, Permission::ManageChannel, CallRoom,
+        MessageType::SetChannelOverrideRequest, MessageType::SetChannelOverrideResponse, StatusResponsePayload{254});
+}
+
+void HandleDeleteChannelOverride(ClientContext& ctx, const Frame& frame) {
+    ProxyToService(ctx, frame, Permission::ManageChannel, CallRoom,
+        MessageType::DeleteChannelOverrideRequest, MessageType::DeleteChannelOverrideResponse, StatusResponsePayload{254});
+}
+
+// Не через ProxyToService: нужно разобрать userId до форварда, чтобы проверить
+// неприкосновенность владельца — иначе его выкинули бы из канала прежде, чем
+// успели бы отказать.
+void HandleChannelKick(ClientContext& ctx, const Frame& frame) {
+    if (!HasPermission(ctx.session, Permission::KickMembers)) {
+        SendToSession(ctx.session, MessageType::ChannelKickResponse, StatusResponsePayload{254}.Serialize());
+        return;
+    }
+    auto request = RoomMembershipRequestPayload::Deserialize(frame.payload);
+    if (IsTargetOwner(request.userId)) {
+        SendToSession(ctx.session, MessageType::ChannelKickResponse, StatusResponsePayload{254}.Serialize());
+        return;
+    }
+
+    Frame roomResponse;
+    if (!CallRoom(MessageType::ChannelKickRequest, frame.payload, MessageType::ChannelKickResponse, roomResponse)) return;
+    SendToSession(ctx.session, MessageType::ChannelKickResponse, roomResponse.payload);
+
+    if (StatusResponsePayload::Deserialize(roomResponse.payload).status == 0) {
+        ForceLeaveRoomIfOnline(request.userId, request.roomId);
+    }
+}
+
+void HandleChannelUnban(ClientContext& ctx, const Frame& frame) {
+    ProxyToService(ctx, frame, Permission::KickMembers, CallRoom,
+        MessageType::ChannelUnbanRequest, MessageType::ChannelUnbanResponse, StatusResponsePayload{254});
+}
+
+void HandleChannelMute(ClientContext& ctx, const Frame& frame) {
+    if (!HasPermission(ctx.session, Permission::ManageChannelModeration)) {
+        SendToSession(ctx.session, MessageType::ChannelMuteResponse, StatusResponsePayload{254}.Serialize());
+        return;
+    }
+    auto request = RoomMembershipRequestPayload::Deserialize(frame.payload);
+    if (IsTargetOwner(request.userId)) {
+        SendToSession(ctx.session, MessageType::ChannelMuteResponse, StatusResponsePayload{254}.Serialize());
+        return;
+    }
+
+    Frame roomResponse;
+    if (!CallRoom(MessageType::ChannelMuteRequest, frame.payload, MessageType::ChannelMuteResponse, roomResponse)) return;
+    SendToSession(ctx.session, MessageType::ChannelMuteResponse, roomResponse.payload);
+}
+
+void HandleChannelUnmute(ClientContext& ctx, const Frame& frame) {
+    ProxyToService(ctx, frame, Permission::ManageChannelModeration, CallRoom,
+        MessageType::ChannelUnmuteRequest, MessageType::ChannelUnmuteResponse, StatusResponsePayload{254});
+}
+
+void HandleIpBanList(ClientContext& ctx, const Frame& frame) {
+    ProxyToService(ctx, frame, Permission::ManageServerBans, CallAuth,
+        MessageType::IpBanListRequest, MessageType::IpBanListResponse, IpBanListResponsePayload{});
+}
+
+void HandleIpBan(ClientContext& ctx, const Frame& frame) {
+    Frame authResponse = ProxyToService(ctx, frame, Permission::ManageServerBans, CallAuth,
+        MessageType::IpBanRequest, MessageType::IpBanResponse, StatusResponsePayload{254});
+    if (authResponse.messageType == 0) return;
+
+    auto request = IpPayload::Deserialize(frame.payload);
+    DisconnectSessionsForIp(request.ip);
+}
+
+void HandleIpUnban(ClientContext& ctx, const Frame& frame) {
+    ProxyToService(ctx, frame, Permission::ManageServerBans, CallAuth,
+        MessageType::IpUnbanRequest, MessageType::IpUnbanResponse, StatusResponsePayload{254});
+}
+
+// Действие "Заблокировать" в панели участников — банит IP текущей активной сессии
+// пользователя. Composite, не через ProxyToService: клиентский payload (userId) не
+// совпадает по форме с тем, что реально уходит в auth (ip), поэтому собираем сами.
+void HandleBanUserSession(ClientContext& ctx, const Frame& frame) {
+    if (!HasPermission(ctx.session, Permission::ManageServerBans)) {
+        SendToSession(ctx.session, MessageType::BanUserSessionResponse, StatusResponsePayload{254}.Serialize());
+        return;
+    }
+
+    auto request = BanUserSessionRequestPayload::Deserialize(frame.payload);
+
+    StatusResponsePayload response;
+    if (request.userId == ctx.session->userId) {
+        // Не даём случайно отрезать себе доступ — клиент уже прячет эту кнопку
+        // для своей же строки, но что-то другое (test_client, будущий баг) может
+        // прислать такой запрос напрямую, так что проверяем и здесь тоже.
+        response.status = 2; // нельзя заблокировать самого себя
+        SendToSession(ctx.session, MessageType::BanUserSessionResponse, response.Serialize());
+        return;
+    }
+
+    if (IsTargetOwner(request.userId)) {
+        response.status = 3; // нельзя заблокировать владельца сервера
+        SendToSession(ctx.session, MessageType::BanUserSessionResponse, response.Serialize());
+        return;
+    }
+
+    auto sessions = g_sessions.GetSessionsForUsers({ request.userId });
+
+    if (sessions.empty()) {
+        response.status = 1; // пользователь сейчас не в сети — банить нечего (нет IP)
+        SendToSession(ctx.session, MessageType::BanUserSessionResponse, response.Serialize());
+        return;
+    }
+
+    std::string ip = sessions.front()->remoteIp;
+
+    IpPayload banRequest;
+    banRequest.ip = ip;
+    Frame authResponse;
+    if (!CallAuth(MessageType::IpBanRequest, banRequest.Serialize(), MessageType::IpBanResponse, authResponse)) {
+        response.status = 9; // auth_service недоступен
+        SendToSession(ctx.session, MessageType::BanUserSessionResponse, response.Serialize());
+        return;
+    }
+
+    DisconnectSessionsForIp(ip);
+
+    response.status = 0;
+    SendToSession(ctx.session, MessageType::BanUserSessionResponse, response.Serialize());
+    std::cout << "[gateway] Banned session IP " << ip << " (userId=" << request.userId << ")" << std::endl;
+}
+
+// Действие "Удалить" в панели участников — сносит аккаунт целиком (не через
+// ProxyToService: нужно разобрать userId до форварда для само-/owner-проверок,
+// и оборвать активную сессию + разослать всем свежий список ПОСЛЕ успеха).
+void HandleDeleteUser(ClientContext& ctx, const Frame& frame) {
+    if (!HasPermission(ctx.session, Permission::ManageUsers)) {
+        SendToSession(ctx.session, MessageType::DeleteUserResponse, StatusResponsePayload{254}.Serialize());
+        return;
+    }
+
+    auto request = DeleteUserRequestPayload::Deserialize(frame.payload);
+
+    StatusResponsePayload response;
+    if (request.userId == ctx.session->userId) {
+        response.status = 2; // нельзя удалить самого себя
+        SendToSession(ctx.session, MessageType::DeleteUserResponse, response.Serialize());
+        return;
+    }
+
+    if (IsTargetOwner(request.userId)) {
+        response.status = 3; // владелец неприкосновенен
+        SendToSession(ctx.session, MessageType::DeleteUserResponse, response.Serialize());
+        return;
+    }
+
+    Frame authResponse;
+    if (!CallAuth(MessageType::DeleteUserRequest, frame.payload, MessageType::DeleteUserResponse, authResponse)) return;
+    SendToSession(ctx.session, MessageType::DeleteUserResponse, authResponse.payload);
+
+    if (StatusResponsePayload::Deserialize(authResponse.payload).status == 0) {
+        for (const auto& session : g_sessions.GetSessionsForUsers({ request.userId })) {
+            ShutdownSocket(session->rawSocket);
+        }
+        BroadcastUserListToAll();
+        std::cout << "[gateway] Deleted account userId=" << request.userId << std::endl;
+    }
+}
+
+void ClientThread(socket_t clientSocket, std::string remoteIp) {
     ClientContext ctx;
     ctx.socket = clientSocket;
-    std::cout << "[gateway] Client connected" << std::endl;
+    ctx.remoteIp = remoteIp;
 
-    // Ставим таймаут на чтение, чтобы recv() не висел вечно на мёртвом соединении
+    if (IsIpBanned(remoteIp)) {
+        std::cout << "[gateway] Rejected connection from banned IP " << remoteIp << std::endl;
+        CloseSocket(clientSocket);
+        return;
+    }
+
+    // Ставим таймаут на чтение до хендшейка — иначе зависший на TLS клиент
+    // навсегда займёт поток, так же как раньше это грозило голому recv().
     SetRecvTimeout(clientSocket, g_config.gateway.recvTimeoutMs);
+
+    ctx.transport = TlsTransport::AcceptServer(g_tls->Get(), clientSocket);
+    if (!ctx.transport) {
+        std::cout << "[gateway] TLS handshake failed, dropping connection" << std::endl;
+        CloseSocket(ctx.socket);
+        return;
+    }
+    std::cout << "[gateway] Client connected (TLS), ip=" << remoteIp << std::endl;
 
     auto lastActivity = std::chrono::steady_clock::now();
 
     while (true) {
         Frame frame;
-        FrameResult result = ReceiveFrame(ctx.socket, frame);
+        FrameResult result = ReceiveFrame(*ctx.transport, frame);
 
         if (result == FrameResult::Timeout) {
             auto idleSeconds = std::chrono::duration_cast<std::chrono::seconds>(
@@ -288,6 +823,26 @@ void ClientThread(socket_t clientSocket) {
         case MessageType::LeaveRoom:         HandleLeaveRoom(ctx, frame);   break;
         case MessageType::HistoryRequest:    HandleHistory(ctx, frame);     break;
         case MessageType::TextMessage:       HandleTextMessage(ctx, frame); break;
+        case MessageType::TypingRequest:     HandleTyping(ctx, frame);      break;
+        case MessageType::RoleListRequest:   HandleRoleList(ctx, frame);    break;
+        case MessageType::UserListRequest:   HandleUserList(ctx, frame);    break;
+        case MessageType::RoleCreateRequest: HandleRoleCreate(ctx, frame);  break;
+        case MessageType::RoleUpdateRequest: HandleRoleUpdate(ctx, frame);  break;
+        case MessageType::RoleDeleteRequest: HandleRoleDelete(ctx, frame);  break;
+        case MessageType::RoleAssignRequest: HandleRoleAssign(ctx, frame);  break;
+        case MessageType::RoleRemoveRequest: HandleRoleRemove(ctx, frame);  break;
+        case MessageType::ChannelOverridesRequest:      HandleGetChannelOverrides(ctx, frame);    break;
+        case MessageType::SetChannelOverrideRequest:    HandleSetChannelOverride(ctx, frame);     break;
+        case MessageType::DeleteChannelOverrideRequest: HandleDeleteChannelOverride(ctx, frame);  break;
+        case MessageType::ChannelKickRequest:   HandleChannelKick(ctx, frame);   break;
+        case MessageType::ChannelUnbanRequest:  HandleChannelUnban(ctx, frame);  break;
+        case MessageType::ChannelMuteRequest:   HandleChannelMute(ctx, frame);   break;
+        case MessageType::ChannelUnmuteRequest: HandleChannelUnmute(ctx, frame); break;
+        case MessageType::IpBanListRequest: HandleIpBanList(ctx, frame); break;
+        case MessageType::IpBanRequest:     HandleIpBan(ctx, frame);     break;
+        case MessageType::IpUnbanRequest:   HandleIpUnban(ctx, frame);   break;
+        case MessageType::BanUserSessionRequest: HandleBanUserSession(ctx, frame); break;
+        case MessageType::DeleteUserRequest: HandleDeleteUser(ctx, frame); break;
         case MessageType::Ping:
             // Отвечаем только залогиненным — до логина сессии ещё нет
             if (ctx.session) SendToSession(ctx.session, MessageType::Pong, frame.payload);
@@ -302,7 +857,11 @@ void ClientThread(socket_t clientSocket) {
     if (ctx.session) {
         g_sessions.RemoveSession(ctx.session->sessionId);
         std::cout << "[gateway] Session closed, online=" << g_sessions.OnlineCount() << std::endl;
+        BroadcastUserListToAll(); // presence поменялась — досылаем всем свежий список
     }
+    // Отпускаем TLS-объект (шлёт close_notify) до закрытия самого сокета, а не после.
+    ctx.session.reset();
+    ctx.transport.reset();
     CloseSocket(ctx.socket);
 }
 
@@ -321,24 +880,32 @@ int main() {
         return 1;
     }
 
-    socket_t listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    sockaddr_in serverAddr{};
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = INADDR_ANY;
-    serverAddr.sin_port = htons(g_config.gateway.port);
+    try {
+        g_tls = std::make_unique<TlsContext>(g_config.gateway.tls.certPath, g_config.gateway.tls.keyPath);
+    }
+    catch (const std::exception& ex) {
+        std::cerr << "[gateway] TLS error: " << ex.what() << std::endl;
+        return 1;
+    }
+    std::cout << "[gateway] TLS certificate fingerprint (SHA-256): " << g_tls->FingerprintHex() << std::endl;
 
-    if (bind(listenSocket, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr)) == -1) {
+    socket_t listenSocket = CreateListenSocket(g_config.gateway.port);
+    if (listenSocket == kInvalidSocket) {
         std::cerr << "[gateway] Bind failed" << std::endl;
         return 1;
     }
-    listen(listenSocket, SOMAXCONN);
 
     std::cout << "[gateway] Listening on port " << g_config.gateway.port << std::endl;
 
     while (true) {
-        socket_t clientSocket = accept(listenSocket, nullptr, nullptr);
+        sockaddr_in clientAddr{};
+        socklen_t addrLen = sizeof(clientAddr);
+        socket_t clientSocket = accept(listenSocket, reinterpret_cast<sockaddr*>(&clientAddr), &addrLen);
         if (clientSocket == kInvalidSocket) continue;
-        std::thread(ClientThread, clientSocket).detach();
+
+        char ipBuf[INET_ADDRSTRLEN] = {};
+        inet_ntop(AF_INET, &clientAddr.sin_addr, ipBuf, sizeof(ipBuf));
+        std::thread(ClientThread, clientSocket, std::string(ipBuf)).detach();
     }
 
     return 0;

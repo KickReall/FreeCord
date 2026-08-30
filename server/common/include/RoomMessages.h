@@ -75,9 +75,15 @@ struct StatusResponsePayload {
     }
 };
 
+// Задел на будущее (см. план "Голос и видео" в CLAUDE.md) — деление каналов на
+// текстовые/голосовые. Пока чисто модель данных: создание голосового канала
+// нигде не выставлено наружу, все существующие комнаты — Text.
+enum class RoomType : uint8_t { Text = 0, Voice = 1 };
+
 struct RoomInfo {
     int64_t id = 0;
     std::string name;
+    RoomType type = RoomType::Text;
 };
 
 struct RoomListResponsePayload {
@@ -89,6 +95,7 @@ struct RoomListResponsePayload {
         for (const auto& room : rooms) {
             WriteScalar(buffer, room.id);
             WriteString(buffer, room.name);
+            WriteScalar(buffer, static_cast<uint8_t>(room.type));
         }
         return buffer;
     }
@@ -100,6 +107,7 @@ struct RoomListResponsePayload {
             RoomInfo info;
             info.id = ReadScalar<int64_t>(buffer, offset);
             info.name = ReadString(buffer, offset);
+            info.type = static_cast<RoomType>(ReadScalar<uint8_t>(buffer, offset));
             r.rooms.push_back(info);
         }
         return r;
@@ -140,6 +148,122 @@ struct RoomMembersResponsePayload {
         for (uint32_t i = 0; i < count; ++i) {
             r.userIds.push_back(ReadScalar<int64_t>(buffer, offset));
         }
+        return r;
+    }
+};
+
+struct ChannelOverrideInfo {
+    int64_t roleId = 0;
+    uint32_t allow = 0;
+    uint32_t deny = 0;
+};
+
+struct ChannelOverridesRequestPayload {
+    int64_t roomId = 0;
+
+    std::vector<uint8_t> Serialize() const {
+        std::vector<uint8_t> buffer;
+        WriteScalar(buffer, roomId);
+        return buffer;
+    }
+    static ChannelOverridesRequestPayload Deserialize(const std::vector<uint8_t>& buffer) {
+        size_t offset = 0;
+        ChannelOverridesRequestPayload r;
+        r.roomId = ReadScalar<int64_t>(buffer, offset);
+        return r;
+    }
+};
+
+struct ChannelOverridesResponsePayload {
+    std::vector<ChannelOverrideInfo> overrides;
+
+    std::vector<uint8_t> Serialize() const {
+        std::vector<uint8_t> buffer;
+        WriteScalar(buffer, static_cast<uint32_t>(overrides.size()));
+        for (const auto& o : overrides) {
+            WriteScalar(buffer, o.roleId);
+            WriteScalar(buffer, o.allow);
+            WriteScalar(buffer, o.deny);
+        }
+        return buffer;
+    }
+    static ChannelOverridesResponsePayload Deserialize(const std::vector<uint8_t>& buffer) {
+        size_t offset = 0;
+        ChannelOverridesResponsePayload r;
+        uint32_t count = ReadScalar<uint32_t>(buffer, offset);
+        for (uint32_t i = 0; i < count; ++i) {
+            ChannelOverrideInfo o;
+            o.roleId = ReadScalar<int64_t>(buffer, offset);
+            o.allow = ReadScalar<uint32_t>(buffer, offset);
+            o.deny = ReadScalar<uint32_t>(buffer, offset);
+            r.overrides.push_back(o);
+        }
+        return r;
+    }
+};
+
+struct SetChannelOverrideRequestPayload {
+    int64_t roomId = 0;
+    int64_t roleId = 0;
+    uint32_t allow = 0;
+    uint32_t deny = 0;
+
+    std::vector<uint8_t> Serialize() const {
+        std::vector<uint8_t> buffer;
+        WriteScalar(buffer, roomId);
+        WriteScalar(buffer, roleId);
+        WriteScalar(buffer, allow);
+        WriteScalar(buffer, deny);
+        return buffer;
+    }
+    static SetChannelOverrideRequestPayload Deserialize(const std::vector<uint8_t>& buffer) {
+        size_t offset = 0;
+        SetChannelOverrideRequestPayload r;
+        r.roomId = ReadScalar<int64_t>(buffer, offset);
+        r.roleId = ReadScalar<int64_t>(buffer, offset);
+        r.allow = ReadScalar<uint32_t>(buffer, offset);
+        r.deny = ReadScalar<uint32_t>(buffer, offset);
+        return r;
+    }
+};
+
+// Ответ на ChannelModerationStatusRequest (roomId+userId — переиспользует
+// RoomMembershipRequestPayload, как Join/Leave/Kick/Mute).
+struct ChannelModerationStatusResponsePayload {
+    uint8_t banned = 0;
+    uint8_t muted = 0;
+
+    std::vector<uint8_t> Serialize() const {
+        std::vector<uint8_t> buffer;
+        WriteScalar(buffer, banned);
+        WriteScalar(buffer, muted);
+        return buffer;
+    }
+    static ChannelModerationStatusResponsePayload Deserialize(const std::vector<uint8_t>& buffer) {
+        size_t offset = 0;
+        ChannelModerationStatusResponsePayload r;
+        r.banned = ReadScalar<uint8_t>(buffer, offset);
+        r.muted = ReadScalar<uint8_t>(buffer, offset);
+        return r;
+    }
+};
+
+// Сброс оверрайда роли на канале обратно к базовым правам роли (без исключения из canала).
+struct DeleteChannelOverrideRequestPayload {
+    int64_t roomId = 0;
+    int64_t roleId = 0;
+
+    std::vector<uint8_t> Serialize() const {
+        std::vector<uint8_t> buffer;
+        WriteScalar(buffer, roomId);
+        WriteScalar(buffer, roleId);
+        return buffer;
+    }
+    static DeleteChannelOverrideRequestPayload Deserialize(const std::vector<uint8_t>& buffer) {
+        size_t offset = 0;
+        DeleteChannelOverrideRequestPayload r;
+        r.roomId = ReadScalar<int64_t>(buffer, offset);
+        r.roleId = ReadScalar<int64_t>(buffer, offset);
         return r;
     }
 };

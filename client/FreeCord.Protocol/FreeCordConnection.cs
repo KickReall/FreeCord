@@ -1,4 +1,9 @@
+using System.Linq;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 
 namespace FreeCord.Protocol;
 
@@ -15,16 +20,48 @@ public sealed class FreeCordConnection : IAsyncDisposable
     private const uint MaxPayloadSize = 16 * 1024 * 1024;
 
     private TcpClient? _tcp;
-    private NetworkStream? _stream;
+    private Stream? _stream;   // после подключения — SslStream; TLS обязателен, plain-соединения не бывает
     private CancellationTokenSource? _cts;
     private Task? _receiveTask;
     private Task? _pingTask;
+    private readonly TrustedServerStore _trustedServers = new();
     private static readonly TimeSpan PingInterval = TimeSpan.FromSeconds(15);
 
     // Отправлять могут разные потоки — сериализуем запись, иначе кадры перемешаются
     private readonly SemaphoreSlim _sendLock = new(1, 1);
 
     public bool IsConnected => _tcp?.Connected ?? false;
+
+    /// <summary>
+    /// Отпечаток, закреплённый (TOFU) для этого host:port на прошлых подключениях —
+    /// в отличие от <see cref="ServerFingerprint"/> не требует, чтобы соединение было
+    /// установлено прямо сейчас: читается из уже сохранённого на диске состояния.
+    /// </summary>
+    public string? GetPinnedFingerprint(string host, int port) => _trustedServers.GetPinnedFingerprint(host, port);
+
+    /// <summary>
+    /// Закрепляет отпечаток заранее, до первого подключения — используется при вводе
+    /// инвайт-ссылки с отпечатком: тогда самое первое подключение уже проверяется
+    /// по известному значению, а не слепо доверяет тому, что пришло от сервера.
+    /// Если для этого host:port уже что-то закреплено, не перезаписывает — TOFU
+    /// закрепляет один раз, а не переписывается по желанию звонящего.
+    /// </summary>
+    public void PinFingerprintIfUnknown(string host, int port, string fingerprint)
+    {
+        if (_trustedServers.GetPinnedFingerprint(host, port) is null)
+            _trustedServers.Pin(host, port, fingerprint);
+    }
+
+    /// <summary>
+    /// Отпечаток сертификата текущего соединения — не только что закреплённого, а вообще
+    /// любого успешного подключения. В отличие от host:port однозначно определяет сервер:
+    /// один и тот же gateway может быть доступен под разными именами/адресами (например,
+    /// 127.0.0.1 и 127.0.0.2 на loopback), а сертификат у него один.
+    /// </summary>
+    public string? ServerFingerprint { get; private set; }
+
+    /// <summary>Отпечаток сертификата сервера, закреплённый при первом подключении к этому адресу (TOFU).</summary>
+    public event Action<string>? ServerCertificatePinned;
 
     public event Action<AuthResponse>? AuthResponseReceived;
     public event Action<AuthResponse>? RegisterResponseReceived;
@@ -35,7 +72,29 @@ public sealed class FreeCordConnection : IAsyncDisposable
     public event Action<StatusResponse>? JoinResponseReceived;
     public event Action<StatusResponse>? LeaveResponseReceived;
     public event Action<HistoryResponse>? HistoryReceived;
+    public event Action<RoleListResponse>? RoleListReceived;
+    public event Action<RoleCreateResponse>? RoleCreateResponseReceived;
+    public event Action<StatusResponse>? RoleUpdateResponseReceived;
+    public event Action<StatusResponse>? RoleDeleteResponseReceived;
+    public event Action<StatusResponse>? RoleAssignResponseReceived;
+    public event Action<StatusResponse>? RoleRemoveResponseReceived;
+    public event Action<MyPermissions>? MyPermissionsReceived;
+    public event Action<ChannelOverridesResponse>? ChannelOverridesReceived;
+    public event Action<StatusResponse>? SetChannelOverrideResponseReceived;
+    public event Action<StatusResponse>? DeleteChannelOverrideResponseReceived;
+    public event Action<StatusResponse>? ChannelKickResponseReceived;
+    public event Action<StatusResponse>? ChannelUnbanResponseReceived;
+    public event Action<StatusResponse>? ChannelMuteResponseReceived;
+    public event Action<StatusResponse>? ChannelUnmuteResponseReceived;
+    public event Action<ChannelKickedNotification>? ChannelKicked;
+    public event Action<IpBanListResponse>? IpBanListReceived;
+    public event Action<StatusResponse>? IpBanResponseReceived;
+    public event Action<StatusResponse>? IpUnbanResponseReceived;
+    public event Action<UserListResponse>? UserListReceived;
+    public event Action<StatusResponse>? BanUserSessionResponseReceived;
+    public event Action<StatusResponse>? DeleteUserResponseReceived;
     public event Action<BroadcastTextMessage>? MessageReceived;
+    public event Action<TypingNotification>? TypingReceived;
     public event Action<UserPresence>? UserJoined;
     public event Action<UserPresence>? UserLeft;
     public event Action? PongReceived;
@@ -45,12 +104,60 @@ public sealed class FreeCordConnection : IAsyncDisposable
     {
         _tcp = new TcpClient();
         await _tcp.ConnectAsync(host, port, ct);
-        _stream = _tcp.GetStream();
+
+        // Сертификат самоподписанный (нет доверенного CA), поэтому обычная проверка цепочки
+        // не подходит — вместо неё TOFU: сверяем отпечаток с тем, что закрепили при первом
+        // подключении к этому host:port, и сами решаем, доверять ли текущему сертификату.
+        string? pinnedFingerprint = _trustedServers.GetPinnedFingerprint(host, port);
+        string? observedFingerprint = null;
+
+        var sslStream = new SslStream(_tcp.GetStream(), leaveInnerStreamOpen: false,
+            (_, certificate, _, _) =>
+            {
+                if (certificate is null) return false;
+                using var cert2 = new X509Certificate2(certificate);
+                observedFingerprint = FormatFingerprint(cert2.GetCertHash(HashAlgorithmName.SHA256));
+
+                // Ничего не закреплено — первое подключение, принимаем и закрепим ниже.
+                if (pinnedFingerprint is null) return true;
+                return string.Equals(pinnedFingerprint, observedFingerprint, StringComparison.OrdinalIgnoreCase);
+            });
+
+        try
+        {
+            await sslStream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+            {
+                TargetHost = host,
+                EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+            }, ct);
+        }
+        catch (AuthenticationException)
+        {
+            sslStream.Dispose();
+            if (pinnedFingerprint is not null && observedFingerprint is not null &&
+                !string.Equals(pinnedFingerprint, observedFingerprint, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ServerCertificateChangedException(host, port, pinnedFingerprint, observedFingerprint);
+            }
+            throw;
+        }
+
+        if (pinnedFingerprint is null && observedFingerprint is not null)
+        {
+            _trustedServers.Pin(host, port, observedFingerprint);
+            ServerCertificatePinned?.Invoke(observedFingerprint);
+        }
+
+        _stream = sslStream;
+        ServerFingerprint = observedFingerprint;
 
         _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         _receiveTask = Task.Run(() => ReceiveLoopAsync(_cts.Token));
         _pingTask = Task.Run(() => PingLoopAsync(_cts.Token));
     }
+
+    private static string FormatFingerprint(byte[] hash) =>
+        string.Join(":", hash.Select(b => b.ToString("X2")));
 
     public async Task SendAsync(MessageType type, byte[] payload, uint sequence = 0)
     {
@@ -166,6 +273,72 @@ public sealed class FreeCordConnection : IAsyncDisposable
             case MessageType.Pong:
                 PongReceived?.Invoke();
                 break;
+            case MessageType.RoleListResponse:
+                RoleListReceived?.Invoke(RoleListResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.RoleCreateResponse:
+                RoleCreateResponseReceived?.Invoke(RoleCreateResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.RoleUpdateResponse:
+                RoleUpdateResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.RoleDeleteResponse:
+                RoleDeleteResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.RoleAssignResponse:
+                RoleAssignResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.RoleRemoveResponse:
+                RoleRemoveResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.MyPermissions:
+                MyPermissionsReceived?.Invoke(MyPermissions.Deserialize(frame.Payload));
+                break;
+            case MessageType.ChannelOverridesResponse:
+                ChannelOverridesReceived?.Invoke(ChannelOverridesResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.SetChannelOverrideResponse:
+                SetChannelOverrideResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.DeleteChannelOverrideResponse:
+                DeleteChannelOverrideResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.ChannelKickResponse:
+                ChannelKickResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.ChannelUnbanResponse:
+                ChannelUnbanResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.ChannelMuteResponse:
+                ChannelMuteResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.ChannelUnmuteResponse:
+                ChannelUnmuteResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.ChannelKicked:
+                ChannelKicked?.Invoke(ChannelKickedNotification.Deserialize(frame.Payload));
+                break;
+            case MessageType.IpBanListResponse:
+                IpBanListReceived?.Invoke(IpBanListResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.IpBanResponse:
+                IpBanResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.IpUnbanResponse:
+                IpUnbanResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.UserListResponse:
+                UserListReceived?.Invoke(UserListResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.BanUserSessionResponse:
+                BanUserSessionResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.DeleteUserResponse:
+                DeleteUserResponseReceived?.Invoke(StatusResponse.Deserialize(frame.Payload));
+                break;
+            case MessageType.TypingBroadcast:
+                TypingReceived?.Invoke(TypingNotification.Deserialize(frame.Payload));
+                break;
         }
     }
 
@@ -191,10 +364,69 @@ public sealed class FreeCordConnection : IAsyncDisposable
     public Task SendTextAsync(long roomId, string text) =>
         SendAsync(MessageType.TextMessage, new ClientTextMessage { RoomId = roomId, Text = text }.Serialize());
 
+    public Task TypingAsync(long roomId) =>
+        SendAsync(MessageType.TypingRequest, new TypingRequest { RoomId = roomId }.Serialize());
+
     public Task RequestHistoryAsync(long roomId, uint limit = 50) =>
         SendAsync(MessageType.HistoryRequest, new HistoryRequest { RoomId = roomId, Limit = limit }.Serialize());
 
     public Task PingAsync() => SendAsync(MessageType.Ping);
+
+    public Task ListRolesAsync() => SendAsync(MessageType.RoleListRequest);
+
+    public Task CreateRoleAsync(string name, uint permissions, string displayName = "") =>
+        SendAsync(MessageType.RoleCreateRequest, new RoleCreateRequest { Name = name, Permissions = permissions, DisplayName = displayName }.Serialize());
+
+    public Task UpdateRoleAsync(long roleId, string name, uint permissions, string displayName = "") =>
+        SendAsync(MessageType.RoleUpdateRequest, new RoleUpdateRequest { RoleId = roleId, Name = name, Permissions = permissions, DisplayName = displayName }.Serialize());
+
+    public Task DeleteRoleAsync(long roleId) =>
+        SendAsync(MessageType.RoleDeleteRequest, new RoleDeleteRequest { RoleId = roleId }.Serialize());
+
+    public Task AssignRoleAsync(long userId, long roleId) =>
+        SendAsync(MessageType.RoleAssignRequest, new RoleMembershipRequest { UserId = userId, RoleId = roleId }.Serialize());
+
+    public Task RemoveRoleAsync(long userId, long roleId) =>
+        SendAsync(MessageType.RoleRemoveRequest, new RoleMembershipRequest { UserId = userId, RoleId = roleId }.Serialize());
+
+    public Task GetChannelOverridesAsync(long roomId) =>
+        SendAsync(MessageType.ChannelOverridesRequest, new ChannelOverridesRequest { RoomId = roomId }.Serialize());
+
+    public Task SetChannelOverrideAsync(long roomId, long roleId, uint allow, uint deny) =>
+        SendAsync(MessageType.SetChannelOverrideRequest,
+            new SetChannelOverrideRequest { RoomId = roomId, RoleId = roleId, Allow = allow, Deny = deny }.Serialize());
+
+    public Task DeleteChannelOverrideAsync(long roomId, long roleId) =>
+        SendAsync(MessageType.DeleteChannelOverrideRequest, new DeleteChannelOverrideRequest { RoomId = roomId, RoleId = roleId }.Serialize());
+
+    // Кик = бан от канала + принудительный выход, если пользователь сейчас онлайн в нём
+    public Task KickFromChannelAsync(long roomId, long userId) =>
+        SendAsync(MessageType.ChannelKickRequest, new RoomMembershipRequest { RoomId = roomId, UserId = userId }.Serialize());
+
+    public Task UnbanFromChannelAsync(long roomId, long userId) =>
+        SendAsync(MessageType.ChannelUnbanRequest, new RoomMembershipRequest { RoomId = roomId, UserId = userId }.Serialize());
+
+    public Task MuteInChannelAsync(long roomId, long userId) =>
+        SendAsync(MessageType.ChannelMuteRequest, new RoomMembershipRequest { RoomId = roomId, UserId = userId }.Serialize());
+
+    public Task UnmuteInChannelAsync(long roomId, long userId) =>
+        SendAsync(MessageType.ChannelUnmuteRequest, new RoomMembershipRequest { RoomId = roomId, UserId = userId }.Serialize());
+
+    public Task ListBannedIpsAsync() => SendAsync(MessageType.IpBanListRequest);
+
+    public Task BanIpAsync(string ip) =>
+        SendAsync(MessageType.IpBanRequest, new IpTargetRequest { Ip = ip }.Serialize());
+
+    public Task UnbanIpAsync(string ip) =>
+        SendAsync(MessageType.IpUnbanRequest, new IpTargetRequest { Ip = ip }.Serialize());
+
+    public Task ListUsersAsync() => SendAsync(MessageType.UserListRequest);
+
+    public Task BanUserSessionAsync(long userId) =>
+        SendAsync(MessageType.BanUserSessionRequest, new BanUserSessionRequest { UserId = userId }.Serialize());
+
+    public Task DeleteUserAsync(long userId) =>
+        SendAsync(MessageType.DeleteUserRequest, new DeleteUserRequest { UserId = userId }.Serialize());
 
     public async ValueTask DisposeAsync()
     {
@@ -209,6 +441,7 @@ public sealed class FreeCordConnection : IAsyncDisposable
             try { await _pingTask; } catch { }
         }
         _cts?.Dispose();
+        _stream?.Dispose();
         _tcp?.Dispose();
         _sendLock.Dispose();
     }

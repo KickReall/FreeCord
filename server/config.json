@@ -7,6 +7,7 @@
         "serviceHost": "127.0.0.1",
         "recvTimeoutMs": 5000,
         "clientIdleTimeoutSec": 45,
-        "serviceCallTimeoutMs": 5000
+        "serviceCallTimeoutMs": 5000,
+        "tls": { "certPath": "gateway.crt", "keyPath": "gateway.key" }
     }
 }

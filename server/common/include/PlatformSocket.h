@@ -24,6 +24,11 @@
 // closesocket() / close()
 void CloseSocket(socket_t s);
 
+// shutdown() — обрывает блокирующий recv() в потоке-владельце сокета, вызывается
+// из ДРУГОГО потока (например, при бане по IP); сам fd не закрывает — закрытие
+// остаётся за потоком-владельцем, как и раньше.
+void ShutdownSocket(socket_t s);
+
 // WSAGetLastError() / errno
 int GetLastSocketError();
 
@@ -32,6 +37,12 @@ bool IsTimeoutError(int err);
 
 // Прячет разницу между DWORD (мс) на Windows и struct timeval на Linux
 void SetRecvTimeout(socket_t s, int milliseconds);
+
+// Создаёт TCP-сокет, включает SO_REUSEADDR (иначе перезапуск сразу после
+// остановки сервиса упирается в TIME_WAIT — порт "занят" ещё ~минуту) и биндит
+// его на INADDR_ANY:port. Возвращает kInvalidSocket, если bind() не удался —
+// сообщение со своим префиксом печатает вызывающая сторона (у каждого сервиса свой).
+socket_t CreateListenSocket(int port);
 
 // RAII над инициализацией сокетной библиотеки.
 // На Windows — WSAStartup/WSACleanup, на Linux — no-op (не требуется).

@@ -99,6 +99,10 @@ Avalonia кроссплатформенная, поэтому клиент за�
 
 Порты, пути к файлам БД, адрес хоста для внутренних вызовов, таймауты и лимит длины сообщения задаются в `server/config.json`. SQL-запросы и схемы таблиц — в `server/db/<сервис>/`. Меняйте файлы в `server/`, а не копии в `server/build-*/` — они перезаписываются при каждой сборке, затем пересоберите проект.
 
+### TLS-сертификат
+
+Соединение клиент↔gateway всегда идёт через TLS. При первом запуске `gateway_service` сам генерирует самоподписанный сертификат и ключ (пути — `gateway.tls.certPath`/`keyPath` в `config.json`, по умолчанию `gateway.crt`/`gateway.key` рядом с `.exe`) и печатает в лог его отпечаток (SHA-256). Файлы переиспользуются при следующих запусках — не удаляйте их вручную: клиент запоминает отпечаток сервера при первом подключении (TOFU, как у SSH), и его смена приведёт к отказу подключаться у всех, кто уже подключался раньше.
+
 ### Если что-то пошло не так
 
 - **`vcpkg не найден`** — установите vcpkg (шаг 0) или укажите путь через `$env:VCPKG_ROOT` (Windows) / `export VCPKG_ROOT=...` (Linux).
@@ -201,6 +205,10 @@ Avalonia is cross-platform, so the client runs the same way on both Windows and 
 ### Configuring ports and database paths
 
 Ports, database file paths, the internal service host, timeouts, and the message length limit are set in `server/config.json`. SQL queries and table schemas live under `server/db/<service>/`. Edit the files under `server/`, not the copies under `server/build-*/` — those get overwritten on every build, then rebuild.
+
+### TLS certificate
+
+The client↔gateway connection always goes over TLS. On first launch, `gateway_service` generates its own self-signed certificate and key (paths — `gateway.tls.certPath`/`keyPath` in `config.json`, default `gateway.crt`/`gateway.key` next to the `.exe`) and prints its SHA-256 fingerprint to the log. The files are reused on subsequent launches — don't delete them by hand: the client remembers the server's fingerprint on first connection (TOFU, like SSH), and a changed fingerprint will make every previously-connected client refuse to reconnect.
 
 ### Troubleshooting
 

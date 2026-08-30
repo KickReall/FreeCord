@@ -65,7 +65,7 @@ void HandleList(socket_t sock, RoomRepository& repo, const Frame& frame) {
     std::cout << "[room] ListRooms" << std::endl;
     RoomListResponsePayload response;
     for (const auto& record : repo.ListRooms()) {
-        response.rooms.push_back(RoomInfo{ record.id, record.name });
+        response.rooms.push_back(RoomInfo{ record.id, record.name, static_cast<RoomType>(record.type) });
     }
     SendFrame(sock, static_cast<uint16_t>(MessageType::RoomListResponse), frame.sequence, response.Serialize());
 }
@@ -79,6 +79,105 @@ void HandleMembers(socket_t sock, RoomRepository& repo, const Frame& frame) {
     SendFrame(sock, static_cast<uint16_t>(MessageType::RoomMembersResponse), frame.sequence, response.Serialize());
 }
 
+void HandleGetChannelOverrides(socket_t sock, RoomRepository& repo, const Frame& frame) {
+    auto request = ChannelOverridesRequestPayload::Deserialize(frame.payload);
+    ChannelOverridesResponsePayload response;
+    for (const auto& o : repo.GetChannelOverrides(request.roomId)) {
+        response.overrides.push_back(ChannelOverrideInfo{ o.roleId, o.allow, o.deny });
+    }
+    SendFrame(sock, static_cast<uint16_t>(MessageType::ChannelOverridesResponse), frame.sequence, response.Serialize());
+}
+
+void HandleSetChannelOverride(socket_t sock, RoomRepository& repo, const Frame& frame) {
+    auto request = SetChannelOverrideRequestPayload::Deserialize(frame.payload);
+    StatusResponsePayload response;
+    if (!repo.RoomExists(request.roomId)) {
+        response.status = 1; // room not found
+    }
+    else {
+        repo.SetChannelOverride(request.roomId, request.roleId, request.allow, request.deny);
+        response.status = 0;
+    }
+    SendFrame(sock, static_cast<uint16_t>(MessageType::SetChannelOverrideResponse), frame.sequence, response.Serialize());
+}
+
+void HandleDeleteChannelOverride(socket_t sock, RoomRepository& repo, const Frame& frame) {
+    auto request = DeleteChannelOverrideRequestPayload::Deserialize(frame.payload);
+    StatusResponsePayload response;
+    if (!repo.RoomExists(request.roomId)) {
+        response.status = 1; // room not found
+    }
+    else {
+        repo.DeleteChannelOverride(request.roomId, request.roleId);
+        response.status = 0;
+    }
+    SendFrame(sock, static_cast<uint16_t>(MessageType::DeleteChannelOverrideResponse), frame.sequence, response.Serialize());
+}
+
+void HandleChannelModerationStatus(socket_t sock, RoomRepository& repo, const Frame& frame) {
+    auto request = RoomMembershipRequestPayload::Deserialize(frame.payload);
+    ChannelModerationStatusResponsePayload response;
+    response.banned = repo.IsBanned(request.roomId, request.userId) ? 1 : 0;
+    response.muted = repo.IsMuted(request.roomId, request.userId) ? 1 : 0;
+    SendFrame(sock, static_cast<uint16_t>(MessageType::ChannelModerationStatusResponse), frame.sequence, response.Serialize());
+}
+
+void HandleChannelKick(socket_t sock, RoomRepository& repo, const Frame& frame) {
+    auto request = RoomMembershipRequestPayload::Deserialize(frame.payload);
+    std::cout << "[room] Kick roomId=" << request.roomId << " userId=" << request.userId << std::endl;
+
+    StatusResponsePayload response;
+    if (!repo.RoomExists(request.roomId)) {
+        response.status = 1; // room not found
+    }
+    else {
+        repo.BanUser(request.roomId, request.userId);
+        response.status = 0;
+    }
+    SendFrame(sock, static_cast<uint16_t>(MessageType::ChannelKickResponse), frame.sequence, response.Serialize());
+}
+
+void HandleChannelUnban(socket_t sock, RoomRepository& repo, const Frame& frame) {
+    auto request = RoomMembershipRequestPayload::Deserialize(frame.payload);
+    StatusResponsePayload response;
+    if (!repo.RoomExists(request.roomId)) {
+        response.status = 1; // room not found
+    }
+    else {
+        repo.UnbanUser(request.roomId, request.userId);
+        response.status = 0;
+    }
+    SendFrame(sock, static_cast<uint16_t>(MessageType::ChannelUnbanResponse), frame.sequence, response.Serialize());
+}
+
+void HandleChannelMute(socket_t sock, RoomRepository& repo, const Frame& frame) {
+    auto request = RoomMembershipRequestPayload::Deserialize(frame.payload);
+    std::cout << "[room] Mute roomId=" << request.roomId << " userId=" << request.userId << std::endl;
+
+    StatusResponsePayload response;
+    if (!repo.RoomExists(request.roomId)) {
+        response.status = 1; // room not found
+    }
+    else {
+        repo.MuteUser(request.roomId, request.userId);
+        response.status = 0;
+    }
+    SendFrame(sock, static_cast<uint16_t>(MessageType::ChannelMuteResponse), frame.sequence, response.Serialize());
+}
+
+void HandleChannelUnmute(socket_t sock, RoomRepository& repo, const Frame& frame) {
+    auto request = RoomMembershipRequestPayload::Deserialize(frame.payload);
+    StatusResponsePayload response;
+    if (!repo.RoomExists(request.roomId)) {
+        response.status = 1; // room not found
+    }
+    else {
+        repo.UnmuteUser(request.roomId, request.userId);
+        response.status = 0;
+    }
+    SendFrame(sock, static_cast<uint16_t>(MessageType::ChannelUnmuteResponse), frame.sequence, response.Serialize());
+}
+
 void HandleClient(socket_t sock, RoomRepository& repo) {
     Frame frame;
     if (ReceiveFrame(sock, frame) != FrameResult::Ok) {
@@ -88,11 +187,19 @@ void HandleClient(socket_t sock, RoomRepository& repo) {
     }
 
     switch (static_cast<MessageType>(frame.messageType)) {
-    case MessageType::RoomCreateRequest:  HandleCreate(sock, repo, frame);  break;
-    case MessageType::RoomJoinRequest:    HandleJoin(sock, repo, frame);    break;
-    case MessageType::RoomLeaveRequest:   HandleLeave(sock, repo, frame);   break;
-    case MessageType::RoomListRequest:    HandleList(sock, repo, frame);    break;
-    case MessageType::RoomMembersRequest: HandleMembers(sock, repo, frame); break;
+    case MessageType::RoomCreateRequest:            HandleCreate(sock, repo, frame);  break;
+    case MessageType::RoomJoinRequest:               HandleJoin(sock, repo, frame);    break;
+    case MessageType::RoomLeaveRequest:              HandleLeave(sock, repo, frame);   break;
+    case MessageType::RoomListRequest:               HandleList(sock, repo, frame);    break;
+    case MessageType::RoomMembersRequest:            HandleMembers(sock, repo, frame); break;
+    case MessageType::ChannelOverridesRequest:       HandleGetChannelOverrides(sock, repo, frame);    break;
+    case MessageType::SetChannelOverrideRequest:     HandleSetChannelOverride(sock, repo, frame);     break;
+    case MessageType::DeleteChannelOverrideRequest:  HandleDeleteChannelOverride(sock, repo, frame);  break;
+    case MessageType::ChannelModerationStatusRequest: HandleChannelModerationStatus(sock, repo, frame); break;
+    case MessageType::ChannelKickRequest:            HandleChannelKick(sock, repo, frame);    break;
+    case MessageType::ChannelUnbanRequest:           HandleChannelUnban(sock, repo, frame);   break;
+    case MessageType::ChannelMuteRequest:            HandleChannelMute(sock, repo, frame);    break;
+    case MessageType::ChannelUnmuteRequest:          HandleChannelUnmute(sock, repo, frame);  break;
     default:
         std::cout << "[room] Unexpected messageType: " << frame.messageType << std::endl;
         break;
@@ -127,14 +234,11 @@ int main() {
     }
     std::cout << "[room] Database ready at " << config.room.dbPath << std::endl;
 
-    socket_t listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    sockaddr_in serverAddr{};
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = INADDR_ANY;
-    serverAddr.sin_port = htons(config.room.port);
-
-    bind(listenSocket, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
-    listen(listenSocket, SOMAXCONN);
+    socket_t listenSocket = CreateListenSocket(config.room.port);
+    if (listenSocket == kInvalidSocket) {
+        std::cerr << "[room] Bind failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "[room] Listening on port " << config.room.port << std::endl;
 

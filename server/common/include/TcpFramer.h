@@ -2,6 +2,7 @@
 #include <vector>
 #include <cstdint>
 #include "PlatformSocket.h"
+#include "Transport.h"
 #include "ProtocolTypes.h"
 
 enum class FrameResult {
@@ -17,8 +18,20 @@ struct Frame {
     std::vector<uint8_t> payload;
 };
 
-// Отправляет один кадр (заголовок + payload) целиком. Блокирующий вызов.
-FrameResult SendFrame(socket_t socket, uint16_t messageType, uint32_t sequence, const std::vector<uint8_t>& payload);
+// Отправляет/читает один кадр целиком через произвольный транспорт (обычный
+// сокет или TLS). Блокирующие вызовы.
+FrameResult SendFrame(ITransport& transport, uint16_t messageType, uint32_t sequence, const std::vector<uint8_t>& payload);
+FrameResult ReceiveFrame(ITransport& transport, Frame& outFrame);
 
-// Читает один кадр целиком. Блокирует, пока не придёт весь кадр, либо не оборвётся соединение/ошибка.
-FrameResult ReceiveFrame(socket_t socket, Frame& outFrame);
+// Удобные перегрузки поверх голого сокета — для внутренних вызовов между
+// сервисами, где TLS не используется. Оборачивают сокет в PlainTransport и
+// вызывают версии выше.
+inline FrameResult SendFrame(socket_t socket, uint16_t messageType, uint32_t sequence, const std::vector<uint8_t>& payload) {
+    PlainTransport transport(socket);
+    return SendFrame(transport, messageType, sequence, payload);
+}
+
+inline FrameResult ReceiveFrame(socket_t socket, Frame& outFrame) {
+    PlainTransport transport(socket);
+    return ReceiveFrame(transport, outFrame);
+}

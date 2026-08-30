@@ -1,6 +1,7 @@
 #include "SessionManager.h"
 
-SessionPtr SessionManager::AddSession(int64_t userId, const std::string& username, socket_t socket) {
+SessionPtr SessionManager::AddSession(int64_t userId, const std::string& username, std::shared_ptr<ITransport> transport,
+    const std::string& remoteIp, socket_t rawSocket) {
     std::lock_guard<std::mutex> lock(m_mutex);
 
     auto existing = m_userToSession.find(userId);
@@ -17,7 +18,9 @@ SessionPtr SessionManager::AddSession(int64_t userId, const std::string& usernam
     session->sessionId = sessionId;
     session->userId = userId;
     session->username = username;
-    session->socket = socket;
+    session->transport = std::move(transport);
+    session->remoteIp = remoteIp;
+    session->rawSocket = rawSocket;
 
     m_sessions[session->sessionId] = session;
     m_userToSession[userId] = session->sessionId;
@@ -45,6 +48,18 @@ std::vector<SessionPtr> SessionManager::GetSessionsForUsers(const std::vector<in
         auto it = m_sessions.find(sessionIt->second);
         if (it != m_sessions.end()) {
             result.push_back(it->second);
+        }
+    }
+    return result;
+}
+
+std::vector<SessionPtr> SessionManager::GetSessionsForIp(const std::string& ip) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    std::vector<SessionPtr> result;
+    for (const auto& [id, session] : m_sessions) {
+        if (session->remoteIp == ip) {
+            result.push_back(session);
         }
     }
     return result;

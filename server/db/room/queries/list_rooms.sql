@@ -1,1 +1,1 @@
-SELECT id, name FROM rooms ORDER BY id
+SELECT id, name, type FROM rooms ORDER BY id
