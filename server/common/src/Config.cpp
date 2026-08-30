@@ -68,5 +68,11 @@ AppConfig LoadConfig(const std::string& path) {
     config.gateway.tls.certPath = RequireField<std::string>(tlsSection, "gateway.tls", "certPath");
     config.gateway.tls.keyPath = RequireField<std::string>(tlsSection, "gateway.tls", "keyPath");
 
+    const json& rateLimitSection = RequireSection(gatewaySection, "rateLimit");
+    config.gateway.rateLimit.messagesPerSecond = RequireField<double>(rateLimitSection, "gateway.rateLimit", "messagesPerSecond");
+    config.gateway.rateLimit.messageBurst = RequireField<double>(rateLimitSection, "gateway.rateLimit", "messageBurst");
+    config.gateway.rateLimit.typingPerSecond = RequireField<double>(rateLimitSection, "gateway.rateLimit", "typingPerSecond");
+    config.gateway.rateLimit.typingBurst = RequireField<double>(rateLimitSection, "gateway.rateLimit", "typingBurst");
+
     return config;
 }

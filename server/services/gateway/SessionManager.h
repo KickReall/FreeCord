@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <random>
@@ -36,6 +37,18 @@ struct Session {
     // (одной суммы permissions недостаточно, оверрайд привязан к конкретной роли).
     // Пишется один раз при логине, как и username — без мьютекса, как и оно.
     std::vector<int64_t> roleIds;
+
+    // Антифлуд (token bucket, см. TryConsumeRateLimitToken в gateway/main.cpp) —
+    // отдельные бакеты на обычные сообщения и на "печатает", т.к. у них разная
+    // естественная частота. Читаются и пишутся только собственным потоком сессии
+    // (ClientThread обрабатывает кадры этого клиента строго последовательно),
+    // поэтому, как и roleIds/username, без мьютекса. lastRefill остаётся в
+    // "нулевом" состоянии (epoch) до первого вызова — это не баг: формула
+    // пополнения сама досчитает бакет до полного на первом же обращении.
+    double messageTokens = 0.0;
+    double typingTokens = 0.0;
+    std::chrono::steady_clock::time_point lastMessageRefill;
+    std::chrono::steady_clock::time_point lastTypingRefill;
 };
 
 using SessionPtr = std::shared_ptr<Session>;

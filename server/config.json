@@ -8,6 +8,7 @@
         "recvTimeoutMs": 5000,
         "clientIdleTimeoutSec": 45,
         "serviceCallTimeoutMs": 5000,
-        "tls": { "certPath": "gateway.crt", "keyPath": "gateway.key" }
+        "tls": { "certPath": "gateway.crt", "keyPath": "gateway.key" },
+        "rateLimit": { "messagesPerSecond": 5, "messageBurst": 10, "typingPerSecond": 1, "typingBurst": 3 }
     }
 }

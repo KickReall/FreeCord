@@ -29,6 +29,16 @@ struct TlsConfig {
     std::string keyPath;
 };
 
+// Простой token bucket на сессию: capacity — сколько можно накопить про запас
+// (разрешает короткий всплеск, например вставку нескольких строк подряд),
+// perSecond — скорость восполнения. См. TryConsumeRateLimitToken в gateway/main.cpp.
+struct RateLimitConfig {
+    double messagesPerSecond = 0;
+    double messageBurst = 0;
+    double typingPerSecond = 0;
+    double typingBurst = 0;
+};
+
 struct GatewayConfig {
     int port = 0;
     std::string serviceHost;
@@ -36,6 +46,7 @@ struct GatewayConfig {
     int clientIdleTimeoutSec = 0;
     int serviceCallTimeoutMs = 0;
     TlsConfig tls;
+    RateLimitConfig rateLimit;
 };
 
 struct AppConfig {

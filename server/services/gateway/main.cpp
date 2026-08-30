@@ -245,6 +245,25 @@ void ForceLeaveRoomIfOnline(int64_t userId, int64_t roomId) {
     }
 }
 
+// Token bucket: capacity — сколько запросов можно накопить про запас (короткий
+// всплеск не режется), perSecond — скорость восполнения. Обновляет tokens/lastRefill
+// на месте и возвращает, можно ли пропустить текущий запрос. Вызывается только из
+// потока-владельца сессии (см. поля messageTokens/typingTokens в Session), поэтому
+// без блокировок.
+bool TryConsumeRateLimitToken(double& tokens, std::chrono::steady_clock::time_point& lastRefill,
+    double capacity, double perSecond) {
+    auto now = std::chrono::steady_clock::now();
+    double elapsedSeconds = std::chrono::duration<double>(now - lastRefill).count();
+    lastRefill = now;
+    // Доп. скобки вокруг std::min — на Windows PlatformSocket.h тянет winsock2.h/windows.h
+    // без NOMINMAX, а те определяют min/max как макросы; (std::min) не даёт препроцессору
+    // принять голый "min(" за вызов макроса.
+    tokens = (std::min)(capacity, tokens + elapsedSeconds * perSecond);
+    if (tokens < 1.0) return false;
+    tokens -= 1.0;
+    return true;
+}
+
 void HandleAuth(ClientContext& ctx, const Frame& frame, bool isRegister) {
     auto request = AuthRequestPayload::Deserialize(frame.payload);
 
@@ -429,6 +448,14 @@ void HandleHistory(ClientContext& ctx, const Frame& frame) {
 void HandleTextMessage(ClientContext& ctx, const Frame& frame) {
     auto clientMessage = ClientTextMessagePayload::Deserialize(frame.payload);
 
+    // Антифлуд — молча дропаем, как и остальные проверки ниже (мьют, права):
+    // явный ответ клиенту дал бы флудеру чёткий сигнал, что его вообще заметили.
+    if (!TryConsumeRateLimitToken(ctx.session->messageTokens, ctx.session->lastMessageRefill,
+            g_config.gateway.rateLimit.messageBurst, g_config.gateway.rateLimit.messagesPerSecond)) {
+        std::cout << "[gateway] userId=" << ctx.session->userId << " rate-limited (TextMessage)" << std::endl;
+        return;
+    }
+
     // Писать можно только в комнату, открытую сейчас
     if (ctx.session->currentRoomId.load() != clientMessage.roomId) {
         std::cout << "[gateway] userId=" << ctx.session->userId
@@ -490,6 +517,14 @@ void HandleTextMessage(ClientContext& ctx, const Frame& frame) {
 // индикатор по таймауту, если новое TypingBroadcast для этого senderId не пришло.
 void HandleTyping(ClientContext& ctx, const Frame& frame) {
     auto request = TypingRequestPayload::Deserialize(frame.payload);
+
+    // Свой, более щедрый бакет — типировать легитимно чаще, чем слать сообщения,
+    // но лимит всё равно нужен: клиент троттлит "печатает" сам, а сервер этому
+    // не доверяет (модифицированный клиент мог бы слать TypingRequest без ограничений).
+    if (!TryConsumeRateLimitToken(ctx.session->typingTokens, ctx.session->lastTypingRefill,
+            g_config.gateway.rateLimit.typingBurst, g_config.gateway.rateLimit.typingPerSecond)) {
+        return;
+    }
 
     if (ctx.session->currentRoomId.load() != request.roomId) return;
     if ((EffectivePermissionsInRoom(ctx.session, request.roomId) & static_cast<uint32_t>(Permission::SendMessages)) == 0) return;
