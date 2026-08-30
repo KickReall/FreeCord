@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -35,6 +36,13 @@ public partial class ServerSessionViewModel : ViewModelBase
     private readonly Func<ServerSessionViewModel, bool> _guardConnect;
     private readonly Func<ServerSessionViewModel, bool> _guardFingerprint;
 
+    // Автопереподключение при обрыве связи (не по инициативе пользователя) — см.
+    // StartReconnectLoop. _userInitiatedDisconnect ставится только в DisconnectAsync
+    // (сервер убрали из рейла), чтобы не пытаться переподключаться к тому, что
+    // пользователь сам закрыл.
+    private CancellationTokenSource? _reconnectCts;
+    private bool _userInitiatedDisconnect;
+
     // Отпечаток для проверки на дубликат (в интерфейсе не показывается). Если сессия
     // ещё не подключалась в этом запуске приложения — берём то, что уже закреплено
     // (TOFU) для этого host:port с прошлого раза, а не ждём нового подключения:
@@ -46,6 +54,8 @@ public partial class ServerSessionViewModel : ViewModelBase
     // true, если этот сервер уже когда-то сохранён в servers.json —
     // чтобы не писать дубликат при повторном успешном логине, и чтобы
     // MainWindowViewModel мог отличить настоящую вкладку от свежедобавленной пустой.
+    // Плоское, а не [ObservableProperty]: значение меняется только в PersistIfNeeded,
+    // которое само шлёт уведомление — там же, где это в принципе может произойти.
     public bool IsPersisted { get; private set; }
 
     [ObservableProperty] private string _host;
@@ -170,6 +180,10 @@ public partial class ServerSessionViewModel : ViewModelBase
                 _ = _connection.ListRoomsAsync();
                 _ = _connection.ListRolesAsync();
                 _ = _connection.ListUsersAsync();
+                // После реконнекта комната, что была открыта, теряется на сервере
+                // (currentRoomId живёт в сессии, а не в БД) — открываем её заново и
+                // подтягиваем свежую историю на случай пропущенных сообщений.
+                if (SelectedRoom is not null) _ = SwitchToRoomAsync(SelectedRoom.Id);
             }
             else Status = "Login failed: wrong username or password";
         });
@@ -253,13 +267,14 @@ public partial class ServerSessionViewModel : ViewModelBase
             AddRoom(new RoomInfo(r.RoomId, r.Name));
         });
 
-        _connection.RoomListReceived += r => OnUi(() =>
-        {
-            Rooms.Clear();
-            TextRooms.Clear();
-            VoiceRooms.Clear();
-            foreach (var room in r.Rooms) AddRoom(room);
-        });
+        // Точечная синхронизация, а не Clear()+пересборка — ListBox.SelectedItem у списка
+        // комнат привязан двусторонне к SelectedRoom, и полная очистка коллекции сбрасывает
+        // выделение в null ещё до того, как список наполнится заново (Avalonia сама снимает
+        // выделение, когда ItemsSource становится пустым, а обратно оно не восстанавливается
+        // автоматически). Раньше это проявлялось как потеря открытой комнаты при любом
+        // обновлении списка, пока в нём была выбрана комната — не только после реконнекта,
+        // но и, например, при создании новой комнаты самим пользователем.
+        _connection.RoomListReceived += r => OnUi(() => SyncRooms(r.Rooms));
 
         _connection.RoomCreateResponseReceived += r => OnUi(() =>
         {
@@ -278,6 +293,10 @@ public partial class ServerSessionViewModel : ViewModelBase
 
         _connection.HistoryReceived += r => OnUi(() =>
         {
+            // Запрос истории уходит асинхронно (см. SwitchToRoomAsync) — если пользователь
+            // успел выбрать другую комнату (или её вовсе не выбрал) до того, как ответ
+            // вернулся, применять его уже нельзя: это история чужой комнаты.
+            if (r.Messages.Count > 0 && r.Messages[0].RoomId != SelectedRoom?.Id) return;
             Messages.Clear();
             foreach (var m in r.Messages)
                 Messages.Add(CreateMessageItem(m.SenderId, m.SenderName, m.Text, m.Timestamp));
@@ -295,14 +314,71 @@ public partial class ServerSessionViewModel : ViewModelBase
         _connection.Disconnected += ex => OnUi(() =>
         {
             IsLoggedIn = false;
-            Status = $"Disconnected: {ex?.Message ?? "connection closed"}";
+            if (_userInitiatedDisconnect)
+            {
+                Status = "Отключено";
+                return;
+            }
+            Status = $"Соединение разорвано: {ex?.Message ?? "connection closed"}";
+            StartReconnectLoop();
         });
+    }
+
+    // Нарастающая пауза между попытками (2с → 30с), пока соединение не восстановится
+    // или пользователь не отменит его сам (ручной "Log in" или удаление сервера из рейла).
+    // Отменяет предыдущий цикл, если он ещё жив, и всегда запускает новый с нуля —
+    // безопасно вызывать повторно (в т.ч. из catch у ручного Login, если сама ручная
+    // попытка тоже не удалась: раньше цикл в этом случае молча умирал навсегда,
+    // ничего не перезапуская, и пользователь оставался с текстом ошибки без дальнейших
+    // автоматических попыток).
+    private void StartReconnectLoop()
+    {
+        _reconnectCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        _reconnectCts = cts;
+        _ = ReconnectLoopAsync(cts.Token);
+    }
+
+    private async Task ReconnectLoopAsync(CancellationToken ct)
+    {
+        var delay = TimeSpan.FromSeconds(2);
+        var maxDelay = TimeSpan.FromSeconds(30);
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                OnUi(() => Status = $"Переподключение через {(int)delay.TotalSeconds} сек...");
+                await Task.Delay(delay, ct);
+
+                OnUi(() => Status = "Переподключение...");
+                try
+                {
+                    await _connection.ConnectAsync(Host, Port, ct);
+                    await _connection.LoginAsync(Username, Password);
+                    return; // соединение восстановлено; итог логина обработает AuthResponseReceived
+                }
+                catch (ServerCertificateChangedException ex)
+                {
+                    // Отпечаток сервера изменился — может значить подмену, поэтому не долбим
+                    // дальше автоматически, тут нужно осознанное решение пользователя.
+                    OnUi(() => Status = $"Сертификат сервера изменился: {ex.Message}");
+                    return;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    OnUi(() => Status = $"Не удалось переподключиться: {ex.Message}");
+                    delay = TimeSpan.FromSeconds(Math.Min(delay.TotalSeconds * 2, maxDelay.TotalSeconds));
+                }
+            }
+        }
+        catch (OperationCanceledException) { /* отменено явно — ручной Log in или удаление сервера */ }
     }
 
     private void PersistIfNeeded()
     {
         if (IsPersisted) return;
         IsPersisted = true;
+        OnPropertyChanged(nameof(IsPersisted));
         var entries = _store.Load();
         entries.Add(new ServerEntry(Host, Port, DisplayName));
         _store.Save(entries);
@@ -420,6 +496,23 @@ public partial class ServerSessionViewModel : ViewModelBase
         (room.Type == RoomType.Voice ? VoiceRooms : TextRooms).Add(room);
     }
 
+    // Убирает комнаты, которых больше нет на сервере, и добавляет появившиеся новые —
+    // не трогая остальные, чтобы не терять текущее выделение в списке (см. RoomListReceived).
+    private void SyncRooms(IReadOnlyList<RoomInfo> freshRooms)
+    {
+        for (int i = Rooms.Count - 1; i >= 0; i--)
+        {
+            var existing = Rooms[i];
+            if (freshRooms.Any(room => room.Id == existing.Id)) continue;
+            Rooms.RemoveAt(i);
+            TextRooms.Remove(existing);
+            VoiceRooms.Remove(existing);
+        }
+
+        foreach (var room in freshRooms)
+            if (!Rooms.Any(existing => existing.Id == room.Id)) AddRoom(room);
+    }
+
     // Пустая строка сбрасывает локальный никнейм обратно к настоящему имени. Обновляет
     // и уже отрисованную ленту сообщений этого отправителя — раньше никнейм подхватывался
     // только у новых сообщений, а старые в истории так и оставались с логином.
@@ -472,6 +565,8 @@ public partial class ServerSessionViewModel : ViewModelBase
     // закрывает соединение, чтобы фоновый поток приёма не остался висеть.
     public async Task DisconnectAsync()
     {
+        _userInitiatedDisconnect = true;
+        _reconnectCts?.Cancel();
         await _connection.DisposeAsync();
     }
 
@@ -500,30 +595,45 @@ public partial class ServerSessionViewModel : ViewModelBase
         Status = "Connected";
     }
 
+    // Тот же "Log in" в UI служит и ручным переподключением: если фоновый цикл сейчас
+    // ждёт паузу между попытками, клик должен прервать её и попробовать сразу же, а не
+    // запускать второе параллельное подключение поверх того же _connection.
     [RelayCommand]
     private async Task LoginAsync()
     {
         if (!_guardConnect(this)) return;
+        _reconnectCts?.Cancel();
         try
         {
             await EnsureConnectedAsync();
             if (!_guardFingerprint(this)) return;
             await _connection.LoginAsync(Username, Password);
         }
-        catch (Exception ex) { Status = $"Error: {ex.Message}"; }
+        catch (Exception ex)
+        {
+            Status = $"Error: {ex.Message}";
+            // Ручная попытка не удалась (сервер всё ещё недоступен) — не бросаем
+            // автоматику мёртвой, отдаём попытки обратно фоновому циклу.
+            StartReconnectLoop();
+        }
     }
 
     [RelayCommand]
     private async Task RegisterAsync()
     {
         if (!_guardConnect(this)) return;
+        _reconnectCts?.Cancel();
         try
         {
             await EnsureConnectedAsync();
             if (!_guardFingerprint(this)) return;
             await _connection.RegisterAsync(Username, Password);
         }
-        catch (Exception ex) { Status = $"Error: {ex.Message}"; }
+        catch (Exception ex)
+        {
+            Status = $"Error: {ex.Message}";
+            StartReconnectLoop();
+        }
     }
 
     [RelayCommand]

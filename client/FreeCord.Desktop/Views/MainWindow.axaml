@@ -159,8 +159,15 @@
 
                         <Button Classes="accent" Content="Log in" Command="{Binding LoginCommand}"
                                 HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
+                        <!-- IsPersisted означает, что на этом сервере уже был хотя бы один успешный
+                             вход (см. PersistIfNeeded) — регистрировать здесь больше нечего. -->
                         <Button Content="Register" Command="{Binding RegisterCommand}"
+                                IsVisible="{Binding !IsPersisted}"
                                 HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
+
+                        <!-- Сюда же попадают статусы автопереподключения при обрыве связи -->
+                        <TextBlock Text="{Binding Status}" Foreground="#949BA4" FontSize="12"
+                                   HorizontalAlignment="Center" TextWrapping="Wrap"/>
                     </StackPanel>
                 </Border>
 
