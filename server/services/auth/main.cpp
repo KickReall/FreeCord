@@ -9,6 +9,7 @@
 #include "RoomMessages.h"
 #include "RoleMessages.h"
 #include "IpBanMessages.h"
+#include "AvatarMessages.h"
 #include "UserRepository.h"
 #include "PasswordHasher.h"
 #include "Config.h"
@@ -77,9 +78,32 @@ void HandleRoleList(socket_t clientSocket, UserRepository& repo, const Frame& fr
 void HandleUserList(socket_t clientSocket, UserRepository& repo, const Frame& frame) {
     UserListResponsePayload response;
     for (const auto& user : repo.ListUsers()) {
-        response.users.push_back(UserInfo{ user.id, user.username, user.roleIds });
+        response.users.push_back(UserInfo{ user.id, user.username, user.roleIds, false, user.avatarVersion, "" });
     }
     SendFrame(clientSocket, static_cast<uint16_t>(MessageType::UserListResponse), frame.sequence, response.Serialize());
+}
+
+// Аватарка не секрет — доступна любому залогиненному, тот же тип клиент->gateway
+// (raw-forward) и gateway->auth, как список ролей/участников.
+void HandleAvatarFetch(socket_t clientSocket, UserRepository& repo, const Frame& frame) {
+    auto request = AvatarFetchRequestPayload::Deserialize(frame.payload);
+    auto avatar = repo.GetAvatar(request.userId);
+    AvatarFetchResponsePayload response;
+    response.userId = request.userId;
+    response.version = avatar.version;
+    response.data = std::move(avatar.bytes);
+    SendFrame(clientSocket, static_cast<uint16_t>(MessageType::AvatarFetchResponse), frame.sequence, response.Serialize());
+}
+
+// Internal only — userId уже подставлен и проверен gateway'ем (composite-обработчик
+// там же), auth просто сохраняет байты и отдаёт новую версию.
+void HandleSetUserAvatar(socket_t clientSocket, UserRepository& repo, const Frame& frame) {
+    auto request = SetUserAvatarRequestPayload::Deserialize(frame.payload);
+    int64_t version = repo.SetAvatar(request.userId, request.data);
+    SetUserAvatarResponsePayload response;
+    response.status = version < 0 ? 1 : 0;  // 1 = пользователь не найден
+    response.version = version < 0 ? 0 : version;
+    SendFrame(clientSocket, static_cast<uint16_t>(MessageType::SetUserAvatarResponse), frame.sequence, response.Serialize());
 }
 
 void HandleRoleCreate(socket_t clientSocket, UserRepository& repo, const Frame& frame) {
@@ -200,6 +224,8 @@ void HandleClient(socket_t clientSocket, UserRepository& repo) {
     case MessageType::IpBanListRequest:         HandleIpBanList(clientSocket, repo, frame); break;
     case MessageType::IpBanRequest:             HandleIpBan(clientSocket, repo, frame); break;
     case MessageType::IpUnbanRequest:           HandleIpUnban(clientSocket, repo, frame); break;
+    case MessageType::AvatarFetchRequest:       HandleAvatarFetch(clientSocket, repo, frame); break;
+    case MessageType::SetUserAvatarRequest:     HandleSetUserAvatar(clientSocket, repo, frame); break;
     default:
         std::cout << "[auth] Unexpected messageType: " << frame.messageType << std::endl;
         break;
@@ -226,7 +252,7 @@ int main() {
 
     std::unique_ptr<UserRepository> repo;
     try {
-        repo = std::make_unique<UserRepository>(config.auth.dbPath);
+        repo = std::make_unique<UserRepository>(config.auth.dbPath, config.auth.avatarDir);
     }
     catch (const std::exception& ex) {
         std::cerr << "[auth] Database error: " << ex.what() << std::endl;

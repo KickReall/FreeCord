@@ -1,1 +1,1 @@
-SELECT id, username FROM users ORDER BY id;
+SELECT id, username, avatar_version FROM users ORDER BY id;

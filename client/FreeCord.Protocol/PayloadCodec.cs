@@ -28,6 +28,13 @@ public sealed class PayloadWriter : IDisposable
 		_w.Write(bytes);
 	}
 
+	/// <summary>uint32 длина + байты — для бинарных данных вроде аватарок (WriteString ограничен 64 КБ).</summary>
+	public void WriteBytes(byte[] data)
+	{
+		_w.Write((uint)data.Length);
+		_w.Write(data);
+	}
+
 	public byte[] ToArray()
 	{
 		_w.Flush();
@@ -63,6 +70,12 @@ public sealed class PayloadReader : IDisposable
 		ushort len = _r.ReadUInt16();
 		var bytes = _r.ReadBytes(len);
 		return Encoding.UTF8.GetString(bytes);
+	}
+
+	public byte[] ReadByteArray()
+	{
+		uint len = _r.ReadUInt32();
+		return _r.ReadBytes((int)len);
 	}
 
 	public void Dispose()

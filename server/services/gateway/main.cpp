@@ -1,8 +1,10 @@
 #include <iostream>
+#include <fstream>
 #include <thread>
 #include <chrono>
 #include <memory>
 #include <algorithm>
+#include <nlohmann/json.hpp>
 
 #include "PlatformSocket.h"
 #include "TcpFramer.h"
@@ -15,6 +17,7 @@
 #include "ChatMessages.h"
 #include "RoleMessages.h"
 #include "IpBanMessages.h"
+#include "AvatarMessages.h"
 #include "Permissions.h"
 #include "ServiceClient.h"
 #include "SessionManager.h"
@@ -27,6 +30,89 @@ constexpr int64_t SYSTEM_ROOM_ID = 1;
 SessionManager g_sessions;
 AppConfig g_config;
 std::unique_ptr<TlsContext> g_tls;
+
+// Иконка сервера — один файл на весь деплой (у gateway нет своей БД, как у
+// gateway.crt/.key). version=0 значит "иконки нет"; хранится отдельным текстовым
+// файлом рядом с картинкой, чтобы не терять счётчик при перезапуске (иначе клиенты
+// после каждого рестарта сервиса решали бы, что иконка "изменилась", и качали
+// её заново, хотя файл на диске тот же самый).
+struct ServerIconState {
+    int64_t version = 0;
+    std::vector<uint8_t> bytes;
+};
+ServerIconState g_serverIcon;
+
+std::string ServerIconVersionPath() {
+    return g_config.gateway.serverIconPath + ".version";
+}
+
+void LoadServerIconAtStartup() {
+    std::ifstream file(g_config.gateway.serverIconPath, std::ios::binary);
+    if (!file) return;  // иконки ещё нет — version остаётся 0
+    g_serverIcon.bytes.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+
+    std::ifstream versionFile(ServerIconVersionPath());
+    if (versionFile) versionFile >> g_serverIcon.version;
+    else g_serverIcon.version = 1;  // файл иконки есть, а версии почему-то нет
+}
+
+bool SaveServerIcon(const std::vector<uint8_t>& bytes) {
+    std::ofstream file(g_config.gateway.serverIconPath, std::ios::binary | std::ios::trunc);
+    if (!file) return false;
+    file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    file.close();
+
+    g_serverIcon.bytes = bytes;
+    g_serverIcon.version += 1;
+
+    std::ofstream versionFile(ServerIconVersionPath(), std::ios::trunc);
+    versionFile << g_serverIcon.version;
+    return true;
+}
+
+// Имя и описание сервера — тоже общий на весь деплой файл рядом с иконкой, без
+// версии (короткие строки, кэш не нужен, см. AvatarMessages.h). Пустые значения —
+// валидное состояние "владелец ещё не задал", а не ошибка.
+constexpr size_t kServerNameMaxLength = 100;
+constexpr size_t kServerDescriptionMaxLength = 1000;
+
+struct ServerInfoState {
+    std::string name;
+    std::string description;
+};
+ServerInfoState g_serverInfo;
+
+std::string ServerInfoPath() {
+    return "server-info.json";
+}
+
+void LoadServerInfoAtStartup() {
+    std::ifstream file(ServerInfoPath());
+    if (!file) return;  // ещё не задавали — имя/описание остаются пустыми
+    try {
+        nlohmann::json json;
+        file >> json;
+        g_serverInfo.name = json.value("name", "");
+        g_serverInfo.description = json.value("description", "");
+    }
+    catch (const nlohmann::json::exception&) {
+        std::cerr << "[gateway] Failed to parse " << ServerInfoPath() << ", ignoring" << std::endl;
+    }
+}
+
+bool SaveServerInfo(const std::string& name, const std::string& description) {
+    std::ofstream file(ServerInfoPath(), std::ios::trunc);
+    if (!file) return false;
+    nlohmann::json json;
+    json["name"] = name;
+    json["description"] = description;
+    file << json.dump(2);
+    if (!file) return false;
+
+    g_serverInfo.name = name;
+    g_serverInfo.description = description;
+    return true;
+}
 
 struct ClientContext {
     socket_t socket = kInvalidSocket;         // нужен для SetRecvTimeout/CloseSocket — TLS работает поверх него
@@ -127,28 +213,40 @@ int BroadcastToRoom(int64_t roomId, MessageType type, const std::vector<uint8_t>
 // отобрать права у суперпользователя, что ломает саму идею admin'а.
 uint32_t EffectivePermissionsInRoom(const SessionPtr& session, int64_t roomId) {
     uint32_t base = session->permissions.load();
-    if (base == 0xFFFFFFFFu) return base;
+    if (base == 0xFFFFFFFFu) return base; // admin (и owner — он всегда ещё и admin) — суперпользователь, дальше не идём
+
+    uint32_t effective = base;
 
     Frame overridesResponse;
     ChannelOverridesRequestPayload request;
     request.roomId = roomId;
-    if (!CallRoom(MessageType::ChannelOverridesRequest, request.Serialize(), MessageType::ChannelOverridesResponse, overridesResponse)) {
-        return base; // room_service недоступен — не блокируем на ровном месте, работаем с базовыми правами
+    if (CallRoom(MessageType::ChannelOverridesRequest, request.Serialize(), MessageType::ChannelOverridesResponse, overridesResponse)) {
+        auto overrides = ChannelOverridesResponsePayload::Deserialize(overridesResponse.payload);
+
+        uint32_t allow = 0, deny = 0;
+        for (const auto& o : overrides.overrides) {
+            bool hasRole = std::find(session->roleIds.begin(), session->roleIds.end(), o.roleId) != session->roleIds.end();
+            if (!hasRole) continue;
+            allow |= o.allow;
+            deny |= o.deny;
+        }
+
+        // Явный allow хоть у одной роли побеждает deny у другой — ролевой иерархии
+        // (как у Discord) в проекте нет, поэтому используем самое простое правило.
+        effective = (base & ~deny) | allow;
+    }
+    // иначе room_service недоступен — не блокируем на ровном месте, работаем с базовыми правами
+
+    // Системная комната — писать в неё может только суперпользователь (admin/owner,
+    // они уже отсеклись сентинелом выше). Жёсткое правило поверх оверрайдов, а не
+    // просто deny в БД: администратор мог бы случайно выдать сюда allow через вкладку
+    // "Каналы", и это не должно суметь пробить запрет — видимость и вход не трогаем,
+    // системную комнату по-прежнему видят и открывают все.
+    if (roomId == SYSTEM_ROOM_ID) {
+        effective &= ~static_cast<uint32_t>(Permission::SendMessages);
     }
 
-    auto overrides = ChannelOverridesResponsePayload::Deserialize(overridesResponse.payload);
-
-    uint32_t allow = 0, deny = 0;
-    for (const auto& o : overrides.overrides) {
-        bool hasRole = std::find(session->roleIds.begin(), session->roleIds.end(), o.roleId) != session->roleIds.end();
-        if (!hasRole) continue;
-        allow |= o.allow;
-        deny |= o.deny;
-    }
-
-    // Явный allow хоть у одной роли побеждает deny у другой — ролевой иерархии
-    // (как у Discord) в проекте нет, поэтому используем самое простое правило.
-    return (base & ~deny) | allow;
+    return effective;
 }
 
 // Статус модерации пользователя в комнате (бан/мут). Как и оверрайды, для admin
@@ -217,7 +315,12 @@ bool FetchUserListWithPresence(UserListResponsePayload& outResult) {
     }
     outResult = UserListResponsePayload::Deserialize(userResponse.payload);
     for (auto& user : outResult.users) {
-        user.online = !g_sessions.GetSessionsForUsers({ user.id }).empty();
+        auto sessions = g_sessions.GetSessionsForUsers({ user.id });
+        user.online = !sessions.empty();
+        // Несколько параллельных сессий одного пользователя — редкость (второй клиент
+        // тем же логином), но теоретически возможна; берём IP первой попавшейся, для
+        // отображения в панели администратора этого достаточно.
+        user.ip = sessions.empty() ? "" : sessions.front()->remoteIp;
     }
     return true;
 }
@@ -236,6 +339,19 @@ void BroadcastUserListToAll() {
 // при следующей попытке зайти).
 void ForceLeaveRoomIfOnline(int64_t userId, int64_t roomId) {
     for (const auto& session : g_sessions.GetSessionsForUsers({ userId })) {
+        int64_t expected = roomId;
+        if (session->currentRoomId.compare_exchange_strong(expected, 0)) {
+            RoomMembersRequestPayload notice;
+            notice.roomId = roomId;
+            SendToSession(session, MessageType::ChannelKicked, notice.Serialize());
+        }
+    }
+}
+
+// Как ForceLeaveRoomIfOnline, но для всех, кто сейчас держит канал открытым —
+// используется при удалении канала целиком, а не при кике одного пользователя.
+void ForceLeaveRoomForAll(int64_t roomId) {
+    for (const auto& session : g_sessions.GetSessionsInRoom(roomId)) {
         int64_t expected = roomId;
         if (session->currentRoomId.compare_exchange_strong(expected, 0)) {
             RoomMembersRequestPayload notice;
@@ -393,11 +509,16 @@ void HandleRoomList(ClientContext& ctx, const Frame& frame) {
         return;
     }
 
-    // Комнаты без ViewChannel у пользователя в списке не показываем.
+    // Комнаты без ViewChannel у пользователя в списке не показываем. Заодно
+    // проставляем canSendMessages по тем же эффективным правам — клиент отключает
+    // по нему поле ввода, вместо того чтобы узнавать о запрете только по молчаливому
+    // дропу отправленного текста (см. системную комнату и оверрайды по каналам).
     auto allRooms = RoomListResponsePayload::Deserialize(roomResponse.payload);
     RoomListResponsePayload visibleRooms;
-    for (const auto& room : allRooms.rooms) {
-        if (EffectivePermissionsInRoom(ctx.session, room.id) & static_cast<uint32_t>(Permission::ViewChannel)) {
+    for (auto room : allRooms.rooms) {
+        uint32_t effective = EffectivePermissionsInRoom(ctx.session, room.id);
+        if (effective & static_cast<uint32_t>(Permission::ViewChannel)) {
+            room.canSendMessages = (effective & static_cast<uint32_t>(Permission::SendMessages)) != 0;
             visibleRooms.rooms.push_back(room);
         }
     }
@@ -417,11 +538,55 @@ void HandleRoomCreate(ClientContext& ctx, const Frame& frame) {
         RoomCreatedPayload notification;
         notification.roomId = created.roomId;
         notification.name = request.name;
+        notification.type = request.type;
 
-        // Создателя исключаем: он уже узнал о комнате из RoomCreateResponse
+        // Создателя исключаем: он уже узнал о комнате из RoomCreateResponse (и о её типе —
+        // из следующего ListRoomsAsync, который клиент сам запускает по этому успеху)
         int notified = BroadcastToAll(MessageType::RoomCreated, notification.Serialize(), ctx.session->userId);
         std::cout << "[gateway] Room '" << request.name << "' (id=" << created.roomId
             << ") created, notified " << notified << " users" << std::endl;
+    }
+}
+
+void HandleRoomUpdate(ClientContext& ctx, const Frame& frame) {
+    Frame roomResponse = ProxyToService(ctx, frame, Permission::ManageChannel, CallRoom,
+        MessageType::RoomUpdateRequest, MessageType::RoomUpdateResponse, StatusResponsePayload{254});
+    if (roomResponse.messageType == 0) return;
+
+    auto updated = StatusResponsePayload::Deserialize(roomResponse.payload);
+    if (updated.status == 0) {
+        auto request = RoomUpdateRequestPayload::Deserialize(frame.payload);
+
+        RoomUpdatedPayload notification;
+        notification.roomId = request.roomId;
+        notification.name = request.name;
+
+        // Инициатора не исключаем — в отличие от создания, у него нет отдельного
+        // источника нового имени: RoomUpdateResponse несёт только статус.
+        int notified = BroadcastToAll(MessageType::RoomUpdated, notification.Serialize());
+        std::cout << "[gateway] Room " << request.roomId << " renamed to '" << request.name
+            << "', notified " << notified << " users" << std::endl;
+    }
+}
+
+void HandleRoomDelete(ClientContext& ctx, const Frame& frame) {
+    Frame roomResponse = ProxyToService(ctx, frame, Permission::ManageChannel, CallRoom,
+        MessageType::RoomDeleteRequest, MessageType::RoomDeleteResponse, StatusResponsePayload{254});
+    if (roomResponse.messageType == 0) return;
+
+    auto deleted = StatusResponsePayload::Deserialize(roomResponse.payload);
+    if (deleted.status == 0) {
+        auto request = RoomDeleteRequestPayload::Deserialize(frame.payload);
+
+        // Сначала выкинуть тех, кто держал канал открытым (сбрасывает currentRoomId
+        // на сервере — иначе они могли бы продолжать писать в уже несуществующую
+        // комнату), и только потом — общий пуш "уберите её из списка".
+        ForceLeaveRoomForAll(request.roomId);
+
+        RoomDeletedPayload notification;
+        notification.roomId = request.roomId;
+        int notified = BroadcastToAll(MessageType::RoomDeleted, notification.Serialize());
+        std::cout << "[gateway] Room " << request.roomId << " deleted, notified " << notified << " users" << std::endl;
     }
 }
 
@@ -536,6 +701,148 @@ void HandleTyping(ClientContext& ctx, const Frame& frame) {
     broadcast.senderName = ctx.session->username;
 
     BroadcastToRoom(request.roomId, MessageType::TypingBroadcast, broadcast.Serialize(), ctx.session->userId);
+}
+
+// Аватарка не секрет — доступна любому залогиненному (как список ролей/участников),
+// поэтому raw-forward без ProxyToService: тот же тип и клиент->gateway, и gateway->auth.
+void HandleAvatarFetch(ClientContext& ctx, const Frame& frame) {
+    Frame response;
+    if (!CallAuth(MessageType::AvatarFetchRequest, frame.payload, MessageType::AvatarFetchResponse, response)) return;
+    SendToSession(ctx.session, MessageType::AvatarFetchResponse, response.payload);
+}
+
+// Composite: клиент присылает только байты, userId подставляет сам gateway из
+// сессии — иначе можно было бы выдать себя за чужую аватарку, назвав в запросе
+// чужой id (в отличие от AvatarFetchRequest, где узнать чужую аватарку — не проблема).
+void HandleAvatarUpload(ClientContext& ctx, const Frame& frame) {
+    auto request = AvatarBytesPayload::Deserialize(frame.payload);
+    AvatarUploadResponsePayload response;
+
+    if (request.data.size() > static_cast<size_t>(g_config.gateway.avatarMaxSizeBytes)) {
+        response.status = 1;  // слишком большой файл
+        SendToSession(ctx.session, MessageType::AvatarUploadResponse, response.Serialize());
+        return;
+    }
+
+    SetUserAvatarRequestPayload internalRequest;
+    internalRequest.userId = ctx.session->userId;
+    internalRequest.data = std::move(request.data);
+
+    Frame authResponse;
+    if (!CallAuth(MessageType::SetUserAvatarRequest, internalRequest.Serialize(), MessageType::SetUserAvatarResponse, authResponse)) {
+        response.status = 2;  // сервис недоступен
+        SendToSession(ctx.session, MessageType::AvatarUploadResponse, response.Serialize());
+        return;
+    }
+
+    auto saved = SetUserAvatarResponsePayload::Deserialize(authResponse.payload);
+    response.status = saved.status;
+    response.version = saved.version;
+    SendToSession(ctx.session, MessageType::AvatarUploadResponse, response.Serialize());
+
+    // Версия попадёт в UserInfo у всех — каждый клиент сам решит, перекачивать ли
+    // байты (сравнив с уже закэшированной версией), см. avatarVersion в RoleMessages.h.
+    if (saved.status == 0) BroadcastUserListToAll();
+}
+
+// Иконка сервера — один файл на весь деплой, у gateway нет своей БД, поэтому
+// обрабатывается прямо здесь, без похода в auth. Единственный из всей группы разрешён
+// и ДО логина (см. допуск в главном диспетчере) — иконка сервера должна быть видна
+// в рейле сразу при подключении, а не только после успешного входа; поэтому здесь
+// нет SessionPtr, если клиент ещё не залогинен, и ответ шлём прямо в ctx.transport.
+void HandleServerIconFetch(ClientContext& ctx, const Frame& frame) {
+    ServerIconFetchResponsePayload response;
+    response.version = g_serverIcon.version;
+    response.data = g_serverIcon.bytes;
+    auto payload = response.Serialize();
+
+    if (ctx.session) {
+        SendToSession(ctx.session, MessageType::ServerIconFetchResponse, payload);
+    }
+    else if (ctx.transport) {
+        SendFrame(*ctx.transport, static_cast<uint16_t>(MessageType::ServerIconFetchResponse), 0, payload);
+    }
+}
+
+void HandleServerIconUpload(ClientContext& ctx, const Frame& frame) {
+    AvatarUploadResponsePayload response;
+
+    if (!HasPermission(ctx.session, Permission::ManageServer)) {
+        response.status = 254;
+        SendToSession(ctx.session, MessageType::ServerIconUploadResponse, response.Serialize());
+        return;
+    }
+
+    auto request = AvatarBytesPayload::Deserialize(frame.payload);
+    if (request.data.size() > static_cast<size_t>(g_config.gateway.avatarMaxSizeBytes)) {
+        response.status = 1;  // слишком большой файл
+        SendToSession(ctx.session, MessageType::ServerIconUploadResponse, response.Serialize());
+        return;
+    }
+
+    if (!SaveServerIcon(request.data)) {
+        response.status = 2;  // не удалось записать на диск
+        SendToSession(ctx.session, MessageType::ServerIconUploadResponse, response.Serialize());
+        return;
+    }
+
+    response.status = 0;
+    response.version = g_serverIcon.version;
+    SendToSession(ctx.session, MessageType::ServerIconUploadResponse, response.Serialize());
+
+    // Иконка общая на всех — досылаем её сразу всем, кто сейчас в сети, а не
+    // заставляем ждать следующего логина/явного запроса (как с UserListResponse).
+    ServerIconFetchResponsePayload broadcast;
+    broadcast.version = g_serverIcon.version;
+    broadcast.data = g_serverIcon.bytes;
+    BroadcastToAll(MessageType::ServerIconFetchResponse, broadcast.Serialize());
+}
+
+// Разрешён и до логина (см. допуск в главном диспетчере), как ServerIconFetchRequest —
+// имя сервера должно быть видно в рейле сразу при подключении.
+void HandleServerInfoFetch(ClientContext& ctx, const Frame& frame) {
+    ServerInfoPayload response;
+    response.name = g_serverInfo.name;
+    response.description = g_serverInfo.description;
+    auto payload = response.Serialize();
+
+    if (ctx.session) {
+        SendToSession(ctx.session, MessageType::ServerInfoResponse, payload);
+    }
+    else if (ctx.transport) {
+        SendFrame(*ctx.transport, static_cast<uint16_t>(MessageType::ServerInfoResponse), 0, payload);
+    }
+}
+
+void HandleSetServerInfo(ClientContext& ctx, const Frame& frame) {
+    StatusResponsePayload response;
+
+    if (!HasPermission(ctx.session, Permission::ManageServer)) {
+        response.status = 254;
+        SendToSession(ctx.session, MessageType::SetServerInfoResponse, response.Serialize());
+        return;
+    }
+
+    auto request = ServerInfoPayload::Deserialize(frame.payload);
+    if (request.name.size() > kServerNameMaxLength || request.description.size() > kServerDescriptionMaxLength) {
+        response.status = 1;  // слишком длинное значение
+        SendToSession(ctx.session, MessageType::SetServerInfoResponse, response.Serialize());
+        return;
+    }
+
+    if (!SaveServerInfo(request.name, request.description)) {
+        response.status = 2;  // не удалось записать на диск
+        SendToSession(ctx.session, MessageType::SetServerInfoResponse, response.Serialize());
+        return;
+    }
+
+    response.status = 0;
+    SendToSession(ctx.session, MessageType::SetServerInfoResponse, response.Serialize());
+
+    ServerInfoPayload broadcast;
+    broadcast.name = g_serverInfo.name;
+    broadcast.description = g_serverInfo.description;
+    BroadcastToAll(MessageType::ServerInfoResponse, broadcast.Serialize());
 }
 
 // Список ролей виден любому залогиненному пользователю — сама по себе не секрет,
@@ -843,7 +1150,9 @@ void ClientThread(socket_t clientSocket, std::string remoteIp) {
         if (!isAuthenticated
             && type != MessageType::AuthRequest
             && type != MessageType::RegisterRequest
-            && type != MessageType::Ping) {
+            && type != MessageType::Ping
+            && type != MessageType::ServerIconFetchRequest
+            && type != MessageType::ServerInfoRequest) {
             std::cout << "[gateway] Rejected 0x" << std::hex << frame.messageType
                 << std::dec << " from unauthenticated client" << std::endl;
             continue;
@@ -853,6 +1162,8 @@ void ClientThread(socket_t clientSocket, std::string remoteIp) {
         case MessageType::RegisterRequest:   HandleAuth(ctx, frame, true);  break;
         case MessageType::AuthRequest:       HandleAuth(ctx, frame, false); break;
         case MessageType::RoomCreateRequest: HandleRoomCreate(ctx, frame);  break;
+        case MessageType::RoomUpdateRequest: HandleRoomUpdate(ctx, frame);  break;
+        case MessageType::RoomDeleteRequest: HandleRoomDelete(ctx, frame);  break;
         case MessageType::RoomListRequest:   HandleRoomList(ctx, frame);    break;
         case MessageType::JoinRoom:          HandleSelectRoom(ctx, frame);  break;
         case MessageType::LeaveRoom:         HandleLeaveRoom(ctx, frame);   break;
@@ -878,6 +1189,12 @@ void ClientThread(socket_t clientSocket, std::string remoteIp) {
         case MessageType::IpUnbanRequest:   HandleIpUnban(ctx, frame);   break;
         case MessageType::BanUserSessionRequest: HandleBanUserSession(ctx, frame); break;
         case MessageType::DeleteUserRequest: HandleDeleteUser(ctx, frame); break;
+        case MessageType::AvatarFetchRequest:      HandleAvatarFetch(ctx, frame);      break;
+        case MessageType::AvatarUploadRequest:     HandleAvatarUpload(ctx, frame);     break;
+        case MessageType::ServerIconFetchRequest:  HandleServerIconFetch(ctx, frame);  break;
+        case MessageType::ServerIconUploadRequest: HandleServerIconUpload(ctx, frame); break;
+        case MessageType::ServerInfoRequest:       HandleServerInfoFetch(ctx, frame);  break;
+        case MessageType::SetServerInfoRequest:    HandleSetServerInfo(ctx, frame);    break;
         case MessageType::Ping:
             // Отвечаем только залогиненным — до логина сессии ещё нет
             if (ctx.session) SendToSession(ctx.session, MessageType::Pong, frame.payload);
@@ -908,6 +1225,9 @@ int main() {
         std::cerr << "[gateway] Config error: " << ex.what() << std::endl;
         return 1;
     }
+
+    LoadServerIconAtStartup();
+    LoadServerInfoAtStartup();
 
     SocketLibraryGuard socketLibrary;
     if (!socketLibrary.IsInitialized()) {

@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Threading;
 using System.Threading.Tasks;
+using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -22,6 +23,7 @@ public partial class ServerSessionViewModel : ViewModelBase
     private readonly FreeCordConnection _connection = new();
     private readonly ServerListStore _store;
     private readonly LocalNicknameStore _nicknames = new();
+    private readonly AvatarCache _avatars = new();
 
     // Последние полученные "сырые" списки — держим отдельно от MemberGroups, т.к.
     // группировку нужно пересобирать заново при обновлении любого из двух.
@@ -66,9 +68,14 @@ public partial class ServerSessionViewModel : ViewModelBase
     [ObservableProperty] private bool _useInviteLink;
     [ObservableProperty] private string _inviteLinkText = "";
 
+    // Глобальное — задаёт владелец во вкладке "Информация о сервере" (см. ServerSettingsWindow),
+    // приходит с сервера (ServerInfoResponse) и до, и после логина; локального
+    // переименования больше нет. servers.json кэширует последнее известное значение,
+    // чтобы в рейле было что показать ещё до подключения (см. OnDisplayNameChanged).
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(Initials))]
     private string _displayName;
+    [ObservableProperty] private string _description = "";
     [ObservableProperty] private string _username = "";
     [ObservableProperty] private string _password = "";
     [ObservableProperty] private string _status = "Not connected";
@@ -80,16 +87,38 @@ public partial class ServerSessionViewModel : ViewModelBase
     // переименование/выдачу роли/блокировку (админу нет смысла делать это себе).
     public long CurrentUserId { get; private set; }
 
+    // Список ролей самого залогиненного (из MyPermissions) — нужен только чтобы
+    // определить, Owner ли текущий пользователь: кнопка настроек сервера видна
+    // только ему, независимо от прав (Owner — про неприкосновенность, не про биты).
+    private IReadOnlyList<long> _myRoleIds = Array.Empty<long>();
+    public bool IsOwner => _myRoleIds.Contains(RoleIds.Owner);
+
     [ObservableProperty] private string _newRoomName = "";
     [ObservableProperty] private string _messageText = "";
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasSelectedRoom))]
+    [NotifyPropertyChangedFor(nameof(CanSendInSelectedRoom))]
+    [NotifyPropertyChangedFor(nameof(MessageInputPlaceholder))]
     private RoomInfo? _selectedRoom;
 
     // Поле ввода и кнопка отправки видны, только пока открыта комната — писать
     // "в никуда" бессмысленно, а раньше поле оставалось видно даже без выбранной комнаты.
     public bool HasSelectedRoom => SelectedRoom is not null;
+
+    // RoomInfo.CanSendMessages — это уже готовый результат EffectivePermissionsInRoom с
+    // сервера (системная комната, оверрайды по каналам), но пересчитывается только при
+    // каждом запросе списка комнат; глобальный битовый флаг Permissions обновляется отдельно
+    // и сразу же (RefreshPermissionsIfOnline на gateway после выдачи/снятия роли), поэтому
+    // проверяем оба — иначе после смены роли поле осталось бы активным ещё до переподключения.
+    public bool CanSendInSelectedRoom =>
+        SelectedRoom is { CanSendMessages: true } && (Permissions & (uint)Permission.SendMessages) != 0;
+
+    // Раньше поле ввода оставалось видно и активно даже без права писать — пользователь
+    // узнавал о запрете только по тому, что сообщение молча не появлялось в ленте.
+    public string MessageInputPlaceholder => CanSendInSelectedRoom
+        ? "Написать сообщение..."
+        : "Нет прав писать в этот канал";
 
     public ObservableCollection<RoomInfo> Rooms { get; } = new();
 
@@ -106,17 +135,63 @@ public partial class ServerSessionViewModel : ViewModelBase
     public ObservableCollection<RoleInfo> Roles { get; } = new();
     public ObservableCollection<RoleGroupViewModel> MemberGroups { get; } = new();
 
+    // Плоский список всех участников — для вкладки "Пользователи" в настройках сервера
+    // (там нужна таблица, а не группировка по одной главной роли, как в MemberGroups).
+    public ObservableCollection<MemberViewModel> AllMembers { get; } = new();
+
+    // Чёрный список IP — тоже для вкладки "Пользователи", подгружается по запросу
+    // (см. ServerSettingsViewModel.SelectUsersTab), а не сразу при логине, как роли/участники.
+    public ObservableCollection<string> BannedIps { get; } = new();
+
+    // Оверрайды прав по ролям для канала, который сейчас открыт во вкладке "Каналы" —
+    // подгружаются по запросу конкретного roomId (см. GetChannelOverridesAsync).
+    // ChannelOverrideChanged сообщает наружу об успешном изменении, не пытаясь само
+    // угадать, какой канал сейчас выбран в UI — это забота ServerSettingsViewModel.
+    public ObservableCollection<ChannelOverrideInfo> ChannelOverrides { get; } = new();
+    public event Action? ChannelOverrideChanged;
+
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanManageRoles))]
     [NotifyPropertyChangedFor(nameof(CanManageServerBans))]
     [NotifyPropertyChangedFor(nameof(CanManageChannel))]
     [NotifyPropertyChangedFor(nameof(CanManageUsers))]
+    [NotifyPropertyChangedFor(nameof(CanManageServer))]
+    [NotifyPropertyChangedFor(nameof(CanManageMessages))]
+    [NotifyPropertyChangedFor(nameof(CanManageFiles))]
+    [NotifyPropertyChangedFor(nameof(CanAccessUsersTab))]
+    [NotifyPropertyChangedFor(nameof(CanOpenServerSettings))]
+    [NotifyPropertyChangedFor(nameof(CanSendInSelectedRoom))]
+    [NotifyPropertyChangedFor(nameof(MessageInputPlaceholder))]
     private uint _permissions;
 
     public bool CanManageRoles => (Permissions & (uint)Permission.ManageRoles) != 0;
     public bool CanManageServerBans => (Permissions & (uint)Permission.ManageServerBans) != 0;
     public bool CanManageChannel => (Permissions & (uint)Permission.ManageChannel) != 0;
     public bool CanManageUsers => (Permissions & (uint)Permission.ManageUsers) != 0;
+    public bool CanManageServer => (Permissions & (uint)Permission.ManageServer) != 0;
+    public bool CanManageMessages => (Permissions & (uint)Permission.ManageMessages) != 0;
+    public bool CanManageFiles => (Permissions & (uint)Permission.ManageFiles) != 0;
+
+    // Вкладка "Пользователи" показывает и назначение ролей, и блокировку/удаление,
+    // и список забаненных IP — видна, если есть хоть одно из соответствующих прав.
+    public bool CanAccessUsersTab => CanManageUsers || CanManageServerBans || CanManageRoles;
+
+    // Кнопка-шестерёнка в шапке — по любому из прав на настройки сервера, а не только
+    // Owner'у (тот всё равно admin и потому уже проходит эту проверку без исключений).
+    // Голос/Видео не участвуют — это заглушки на вторую версию, без своего права.
+    public bool CanOpenServerSettings =>
+        CanManageServer || CanManageRoles || CanAccessUsersTab || CanManageChannel || CanManageMessages || CanManageFiles;
+
+    // Иконка сервера — одна на весь деплой, приходит пушем (см. ServerIconFetchResponse)
+    // и сразу после логина. null — иконки нет или ещё не подгрузилась, тогда в UI
+    // остаются инициалы, как раньше.
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasServerIcon))]
+    private Bitmap? _serverIcon;
+
+    public bool HasServerIcon => ServerIcon is not null;
+
+    private string ServerIconCacheKey => $"{Host}:{Port}:servericon";
 
     // Permissions может смениться и без перелогина (см. RefreshPermissionsIfOnline на
     // gateway, после того как кто-то выдал/убрал роль) — но уже построенные MemberViewModel
@@ -143,12 +218,16 @@ public partial class ServerSessionViewModel : ViewModelBase
     private readonly Dictionary<long, (string Name, DateTime Expiry)> _typingUsers = new();
     private DateTime _lastTypingSentUtc = DateTime.MinValue;
 
-    // Диалоги — забота View: открытие окна переименования/выбора роли/подтверждения
-    // делает MainWindow.axaml.cs в ответ на эти события, как и с RenameRequested у серверов.
+    // Диалог переименования — забота View, MainWindow.axaml.cs открывает его в ответ
+    // на это событие. Выдача/снятие роли, блокировка, удаление и загрузка своей
+    // аватарки убраны из контекстного меню участника целиком — переезжают в окно
+    // настроек сервера (вкладка "Пользователи") и в будущий экран настроек профиля;
+    // сетевые обёртки (AssignRoleAsync и т.п. ниже) остаются, их вызовет уже новый UI.
     public event Action<MemberViewModel>? MemberRenameRequested;
-    public event Action<MemberViewModel>? MemberAssignRoleRequested;
-    public event Action<MemberViewModel>? MemberRemoveRoleRequested;
-    public event Action<MemberViewModel>? MemberDeleteRequested;
+
+    // Открытие окна настроек сервера — кнопка-шестерёнка в шапке списка каналов,
+    // видна только Owner'у (см. IsOwner). MainWindow.axaml.cs открывает окно в ответ.
+    public event Action<ServerSessionViewModel>? ServerSettingsRequested;
 
     // Инициалы для кружка в левой панели, пока у серверов нет своих иконок
     public string Initials => string.IsNullOrWhiteSpace(DisplayName)
@@ -180,6 +259,7 @@ public partial class ServerSessionViewModel : ViewModelBase
                 _ = _connection.ListRoomsAsync();
                 _ = _connection.ListRolesAsync();
                 _ = _connection.ListUsersAsync();
+                _ = _connection.FetchServerIconAsync();
                 // После реконнекта комната, что была открыта, теряется на сервере
                 // (currentRoomId живёт в сессии, а не в БД) — открываем её заново и
                 // подтягиваем свежую историю на случай пропущенных сообщений.
@@ -199,7 +279,12 @@ public partial class ServerSessionViewModel : ViewModelBase
             _ = _connection.ListUsersAsync();
         });
 
-        _connection.MyPermissionsReceived += p => OnUi(() => Permissions = p.Permissions);
+        _connection.MyPermissionsReceived += p => OnUi(() =>
+        {
+            Permissions = p.Permissions;
+            _myRoleIds = p.RoleIds;
+            OnPropertyChanged(nameof(IsOwner));
+        });
 
         _connection.RoleListReceived += r => OnUi(() =>
         {
@@ -227,6 +312,47 @@ public partial class ServerSessionViewModel : ViewModelBase
             if (r.IsSuccess) _ = _connection.ListUsersAsync();
         });
 
+        // CRUD самой роли (не путать с выдачей/снятием существующей роли пользователю
+        // выше) — используется вкладкой "Роли" в настройках сервера.
+        _connection.RoleCreateResponseReceived += r => OnUi(() =>
+        {
+            Status = r.Status switch
+            {
+                0 => "Роль создана",
+                1 => "Имя роли уже занято",
+                254 => "Недостаточно прав",
+                _ => "Не удалось создать роль"
+            };
+            if (r.IsSuccess) _ = _connection.ListRolesAsync();
+        });
+
+        _connection.RoleUpdateResponseReceived += r => OnUi(() =>
+        {
+            Status = r.Status switch
+            {
+                0 => "Роль обновлена",
+                1 => "Роль не найдена",
+                2 => "Это системная роль — нельзя менять техническое имя",
+                3 => "Имя роли уже занято",
+                254 => "Недостаточно прав",
+                _ => "Не удалось обновить роль"
+            };
+            if (r.Status == 0) _ = _connection.ListRolesAsync();
+        });
+
+        _connection.RoleDeleteResponseReceived += r => OnUi(() =>
+        {
+            Status = r.Status switch
+            {
+                0 => "Роль удалена",
+                1 => "Роль не найдена",
+                2 => "Системную роль нельзя удалить",
+                254 => "Недостаточно прав",
+                _ => "Не удалось удалить роль"
+            };
+            if (r.Status == 0) _ = _connection.ListRolesAsync();
+        });
+
         _connection.BanUserSessionResponseReceived += r => OnUi(() =>
             Status = r.Status switch
             {
@@ -251,6 +377,77 @@ public partial class ServerSessionViewModel : ViewModelBase
                 _ => "Ошибка удаления"
             });
 
+        _connection.IpBanListReceived += r => OnUi(() =>
+        {
+            BannedIps.Clear();
+            foreach (var ip in r.Ips) BannedIps.Add(ip);
+        });
+
+        _connection.IpBanResponseReceived += r => OnUi(() =>
+        {
+            Status = r.IsSuccess ? "IP заблокирован" : "Не удалось заблокировать IP";
+            if (r.IsSuccess) _ = _connection.ListBannedIpsAsync();
+        });
+
+        _connection.IpUnbanResponseReceived += r => OnUi(() =>
+        {
+            Status = r.IsSuccess ? "IP разблокирован" : "Не удалось разблокировать IP";
+            if (r.IsSuccess) _ = _connection.ListBannedIpsAsync();
+        });
+
+        // Сервер после успешной загрузки сам рассылает свежий UserListResponse с новой
+        // версией всем (см. BroadcastUserListToAll в HandleAvatarUpload) — этот статус
+        // только для обратной связи по самой попытке, обновление байтов придёт отдельно.
+        _connection.AvatarUploadResponseReceived += r => OnUi(() =>
+            Status = r.Status switch
+            {
+                0 => "Аватарка обновлена",
+                1 => "Файл слишком большой",
+                2 => "Сервис недоступен",
+                _ => "Ошибка загрузки аватарки"
+            });
+
+        _connection.AvatarFetchResponseReceived += r => OnUi(() =>
+        {
+            if (r.Version == 0) return;  // сервер ответил "аватарки нет" — кэшировать нечего
+            var bitmap = _avatars.Save(AvatarCacheKey(r.UserId), r.Version, r.Data);
+            if (bitmap is null) return;
+            foreach (var member in MemberGroups.SelectMany(g => g.Members).Where(m => m.UserId == r.UserId))
+                member.Avatar = bitmap;
+        });
+
+        _connection.ServerIconUploadResponseReceived += r => OnUi(() =>
+            Status = r.Status switch
+            {
+                0 => "Иконка сервера обновлена",
+                1 => "Файл слишком большой",
+                2 => "Не удалось сохранить на сервере",
+                254 => "Недостаточно прав",
+                _ => "Ошибка загрузки иконки"
+            });
+
+        // Тот же обработчик и на явный ответ, и на пуш всем при чужой успешной загрузке —
+        // содержимое самодостаточно (version+bytes), различать источник не нужно.
+        _connection.ServerIconFetchResponseReceived += r => OnUi(() =>
+            ServerIcon = r.Version == 0 ? null : _avatars.Save(ServerIconCacheKey, r.Version, r.Data));
+
+        // Тот же обработчик и на явный ответ, и на пуш всем при изменении владельцем —
+        // содержимое самодостаточно, различать источник не нужно (как с иконкой).
+        _connection.ServerInfoResponseReceived += r => OnUi(() =>
+        {
+            DisplayName = string.IsNullOrWhiteSpace(r.Name) ? $"{Host}:{Port}" : r.Name;
+            Description = r.Description;
+        });
+
+        _connection.SetServerInfoResponseReceived += r => OnUi(() =>
+            Status = r.Status switch
+            {
+                0 => "Информация о сервере обновлена",
+                1 => "Слишком длинное значение",
+                254 => "Недостаточно прав",
+                _ => "Ошибка сохранения"
+            });
+
         _connection.TypingReceived += t => OnUi(() =>
         {
             if (t.RoomId != SelectedRoom?.Id) return;
@@ -264,8 +461,91 @@ public partial class ServerSessionViewModel : ViewModelBase
         {
             // Защита от дубликата: список мог обновиться другим путём
             if (Rooms.Any(room => room.Id == r.RoomId)) return;
-            AddRoom(new RoomInfo(r.RoomId, r.Name));
+            AddRoom(new RoomInfo(r.RoomId, r.Name, r.Type));
         });
+
+        // Переименование/удаление — правит тот же Rooms (и TextRooms/VoiceRooms) без
+        // Clear()+пересборки, той же ценой, какой уже стоила потеря выделения комнаты
+        // при обычном обновлении списка (см. SyncRooms) — точечно, чтобы не задеть
+        // SelectedRoom, если сейчас открыта другая комната.
+        _connection.RoomUpdated += r => OnUi(() =>
+        {
+            var room = Rooms.FirstOrDefault(x => x.Id == r.RoomId);
+            if (room is null) return;
+            var updated = room with { Name = r.Name };
+            ReplaceRoom(room, updated);
+        });
+
+        _connection.RoomUpdateResponseReceived += r => OnUi(() =>
+            Status = r.Status switch
+            {
+                0 => "Канал переименован",
+                1 => "Канал не найден",
+                2 => "Название уже занято",
+                3 => "Нельзя переименовать системный канал",
+                254 => "Недостаточно прав",
+                _ => "Не удалось переименовать канал"
+            });
+
+        _connection.RoomDeleted += r => OnUi(() =>
+        {
+            var room = Rooms.FirstOrDefault(x => x.Id == r.RoomId);
+            if (room is null) return;
+            Rooms.Remove(room);
+            TextRooms.Remove(room);
+            VoiceRooms.Remove(room);
+        });
+
+        _connection.RoomDeleteResponseReceived += r => OnUi(() =>
+            Status = r.Status switch
+            {
+                0 => "Канал удалён",
+                1 => "Канал не найден",
+                2 => "Нельзя удалить системный канал",
+                254 => "Недостаточно прав",
+                _ => "Не удалось удалить канал"
+            });
+
+        // Кик из канала (и, тем же путём, принудительный выход при удалении канала —
+        // см. ForceLeaveRoomForAll на gateway) — раньше событие вообще не слушалось,
+        // хотя сервер его уже слал: UI для настоящего кика просто не существовало.
+        _connection.ChannelKicked += n => OnUi(() =>
+        {
+            if (n.RoomId != SelectedRoom?.Id) return;
+            SelectedRoom = null;
+            Status = "Вы больше не в этом канале";
+        });
+
+        _connection.ChannelOverridesReceived += r => OnUi(() =>
+        {
+            ChannelOverrides.Clear();
+            foreach (var o in r.Overrides) ChannelOverrides.Add(o);
+        });
+
+        // ServerSessionViewModel не знает, какой канал сейчас выбран во вкладке
+        // "Каналы" (это состояние UI, ему тут не место) — просто сообщает наружу,
+        // что оверрайды поменялись; ServerSettingsViewModel сам решает, перезапросить
+        // ли их заново для канала, который сейчас открыт в редакторе.
+        _connection.SetChannelOverrideResponseReceived += r => OnUi(() =>
+        {
+            Status = r.IsSuccess ? "Права канала обновлены" : "Не удалось обновить права канала";
+            if (r.IsSuccess) ChannelOverrideChanged?.Invoke();
+        });
+
+        _connection.DeleteChannelOverrideResponseReceived += r => OnUi(() =>
+        {
+            Status = r.IsSuccess ? "Оверрайд сброшен" : "Не удалось сбросить оверрайд";
+            if (r.IsSuccess) ChannelOverrideChanged?.Invoke();
+        });
+
+        _connection.ChannelKickResponseReceived += r => OnUi(() =>
+            Status = r.IsSuccess ? "Пользователь кикнут из канала" : "Не удалось кикнуть из канала");
+        _connection.ChannelUnbanResponseReceived += r => OnUi(() =>
+            Status = r.IsSuccess ? "Пользователь разбанен в канале" : "Не удалось разбанить в канале");
+        _connection.ChannelMuteResponseReceived += r => OnUi(() =>
+            Status = r.IsSuccess ? "Пользователь заглушен в канале" : "Не удалось заглушить в канале");
+        _connection.ChannelUnmuteResponseReceived += r => OnUi(() =>
+            Status = r.IsSuccess ? "Пользователь размьючен в канале" : "Не удалось размьютить в канале");
 
         // Точечная синхронизация, а не Clear()+пересборка — ListBox.SelectedItem у списка
         // комнат привязан двусторонне к SelectedRoom, и полная очистка коллекции сбрасывает
@@ -404,6 +684,7 @@ public partial class ServerSessionViewModel : ViewModelBase
     private void RebuildMemberGroups()
     {
         MemberGroups.Clear();
+        AllMembers.Clear();
         if (_rolesRaw.Count == 0 || _usersRaw.Count == 0) return;
 
         var groupsByRoleId = new Dictionary<long, RoleGroupViewModel>();
@@ -419,7 +700,9 @@ public partial class ServerSessionViewModel : ViewModelBase
                 group = new RoleGroupViewModel(primary.DisplayName);
                 groupsByRoleId[primary.Id] = group;
             }
-            group.Members.Add(CreateMemberViewModel(user));
+            var member = CreateMemberViewModel(user);
+            group.Members.Add(member);
+            AllMembers.Add(member);
         }
 
         // Порядок групп — как в _rolesRaw, чтобы панель не перетасовывалась при каждом обновлении.
@@ -434,7 +717,11 @@ public partial class ServerSessionViewModel : ViewModelBase
         {
             var group = new RoleGroupViewModel("Без роли");
             foreach (var user in withoutRole)
-                group.Members.Add(CreateMemberViewModel(user));
+            {
+                var member = CreateMemberViewModel(user);
+                group.Members.Add(member);
+                AllMembers.Add(member);
+            }
             MemberGroups.Add(group);
         }
     }
@@ -462,13 +749,30 @@ public partial class ServerSessionViewModel : ViewModelBase
         _ => System.Numerics.BitOperations.PopCount(role.Permissions)
     };
 
-    private MemberViewModel CreateMemberViewModel(UserInfo user) => new(
-        user.Id, user.Username, user.RoleIds, user.Online, _nicknames.Get(Host, Port, user.Id),
-        isSelf: user.Id == CurrentUserId,
-        canManageRoles: CanManageRoles,
-        canManageServerBans: CanManageServerBans,
-        canManageUsers: CanManageUsers,
-        block: BlockUser);
+    private MemberViewModel CreateMemberViewModel(UserInfo user)
+    {
+        var member = new MemberViewModel(
+            user.Id, user.Username, user.RoleIds, user.Online, user.Ip, _rolesRaw, _nicknames.Get(Host, Port, user.Id),
+            isSelf: user.Id == CurrentUserId,
+            canManageRoles: CanManageRoles,
+            canManageServerBans: CanManageServerBans,
+            canManageUsers: CanManageUsers,
+            block: BlockUser);
+        ApplyOrFetchAvatar(member, user.AvatarVersion);
+        return member;
+    }
+
+    private string AvatarCacheKey(long userId) => $"{Host}:{Port}:user:{userId}";
+
+    // version=0 — аватарки нет. Иначе сперва проверяем дисковый кэш (не тратим сеть,
+    // если версия не изменилась с прошлого раза) и только при промахе запрашиваем байты.
+    private void ApplyOrFetchAvatar(MemberViewModel member, long version)
+    {
+        if (version == 0) { member.Avatar = null; return; }
+        var cached = _avatars.TryLoad(AvatarCacheKey(member.UserId), version);
+        if (cached is not null) { member.Avatar = cached; return; }
+        _ = _connection.FetchAvatarAsync(member.UserId);
+    }
 
     // Локальный никнейм подставляется и здесь же — иначе история чата пока не
     // переименована показывала бы серверный логин, что и было репортнуто как баг.
@@ -479,16 +783,10 @@ public partial class ServerSessionViewModel : ViewModelBase
     private void RenameMember(MemberViewModel member) => MemberRenameRequested?.Invoke(member);
 
     [RelayCommand]
-    private void AssignRoleToMember(MemberViewModel member) => MemberAssignRoleRequested?.Invoke(member);
-
-    [RelayCommand]
-    private void RemoveRoleFromMember(MemberViewModel member) => MemberRemoveRoleRequested?.Invoke(member);
-
-    [RelayCommand]
-    private void DeleteMember(MemberViewModel member) => MemberDeleteRequested?.Invoke(member);
-
-    [RelayCommand]
     private void ToggleMembers() => ShowMembers = !ShowMembers;
+
+    [RelayCommand]
+    private void OpenServerSettings() => ServerSettingsRequested?.Invoke(this);
 
     private void AddRoom(RoomInfo room)
     {
@@ -496,8 +794,11 @@ public partial class ServerSessionViewModel : ViewModelBase
         (room.Type == RoomType.Voice ? VoiceRooms : TextRooms).Add(room);
     }
 
-    // Убирает комнаты, которых больше нет на сервере, и добавляет появившиеся новые —
-    // не трогая остальные, чтобы не терять текущее выделение в списке (см. RoomListReceived).
+    // Убирает комнаты, которых больше нет на сервере, добавляет появившиеся новые и
+    // обновляет на месте те, что изменились (важно для canSendMessages — оно пересчитывается
+    // заново на каждый запрос списка, и без этой ветки уже добавленная комната так и осталась
+    // бы с устаревшим значением до переподключения) — не трогая остальные, чтобы не терять
+    // текущее выделение в списке (см. RoomListReceived).
     private void SyncRooms(IReadOnlyList<RoomInfo> freshRooms)
     {
         for (int i = Rooms.Count - 1; i >= 0; i--)
@@ -510,7 +811,31 @@ public partial class ServerSessionViewModel : ViewModelBase
         }
 
         foreach (var room in freshRooms)
-            if (!Rooms.Any(existing => existing.Id == room.Id)) AddRoom(room);
+        {
+            var existing = Rooms.FirstOrDefault(r => r.Id == room.Id);
+            if (existing is null) AddRoom(room);
+            else if (existing != room) ReplaceRoom(existing, room);
+        }
+    }
+
+    // Обновляет имя комнаты на месте (Replace, не Remove+Add) во всех трёх коллекциях.
+    // SelectedRoom правится в обход сеттера — иначе OnSelectedRoomChanged воспринял бы
+    // переименование как смену комнаты и заново дёрнул бы историю/подписку на неё.
+    private void ReplaceRoom(RoomInfo oldRoom, RoomInfo newRoom)
+    {
+        int i = Rooms.IndexOf(oldRoom);
+        if (i >= 0) Rooms[i] = newRoom;
+        var group = oldRoom.Type == RoomType.Voice ? VoiceRooms : TextRooms;
+        int j = group.IndexOf(oldRoom);
+        if (j >= 0) group[j] = newRoom;
+
+        if (SelectedRoom?.Id == newRoom.Id)
+        {
+#pragma warning disable MVVMTK0034 // намеренно в обход генерируемого сеттера — см. комментарий выше
+            _selectedRoom = newRoom;
+#pragma warning restore MVVMTK0034
+            OnPropertyChanged(nameof(SelectedRoom));
+        }
     }
 
     // Пустая строка сбрасывает локальный никнейм обратно к настоящему имени. Обновляет
@@ -530,7 +855,35 @@ public partial class ServerSessionViewModel : ViewModelBase
 
     public Task AssignRoleAsync(long userId, long roleId) => _connection.AssignRoleAsync(userId, roleId);
     public Task RemoveRoleAsync(long userId, long roleId) => _connection.RemoveRoleAsync(userId, roleId);
+    public Task CreateRoleAsync(string name, uint permissions, string displayName) =>
+        _connection.CreateRoleAsync(name, permissions, displayName);
+    public Task UpdateRoleAsync(long roleId, string name, uint permissions, string displayName) =>
+        _connection.UpdateRoleAsync(roleId, name, permissions, displayName);
+    public Task DeleteRoleAsync(long roleId) => _connection.DeleteRoleAsync(roleId);
     public Task DeleteUserAsync(long userId) => _connection.DeleteUserAsync(userId);
+    public Task UploadAvatarAsync(byte[] data) => _connection.UploadAvatarAsync(data);
+    public Task UploadServerIconAsync(byte[] data) => _connection.UploadServerIconAsync(data);
+    public Task SetServerInfoAsync(string name, string description) => _connection.SetServerInfoAsync(name, description);
+    public Task BanUserSessionAsync(long userId) => _connection.BanUserSessionAsync(userId);
+    public Task RefreshUsersAsync() => _connection.ListUsersAsync();
+    public Task ListBannedIpsAsync() => _connection.ListBannedIpsAsync();
+    public Task BanIpAsync(string ip) => _connection.BanIpAsync(ip);
+    public Task UnbanIpAsync(string ip) => _connection.UnbanIpAsync(ip);
+
+    // Отдельное имя от команды "CreateRoomAsync" — та уже занята полем ввода в
+    // обычной боковой панели (создаёт только текстовый канал), эта — вкладкой
+    // "Каналы" с явным выбором типа.
+    public Task CreateChannelAsync(string name, RoomType type) => _connection.CreateRoomAsync(name, type);
+    public Task UpdateRoomAsync(long roomId, string name) => _connection.UpdateRoomAsync(roomId, name);
+    public Task DeleteRoomAsync(long roomId) => _connection.DeleteRoomAsync(roomId);
+    public Task GetChannelOverridesAsync(long roomId) => _connection.GetChannelOverridesAsync(roomId);
+    public Task SetChannelOverrideAsync(long roomId, long roleId, uint allow, uint deny) =>
+        _connection.SetChannelOverrideAsync(roomId, roleId, allow, deny);
+    public Task DeleteChannelOverrideAsync(long roomId, long roleId) => _connection.DeleteChannelOverrideAsync(roomId, roleId);
+    public Task KickFromChannelAsync(long roomId, long userId) => _connection.KickFromChannelAsync(roomId, userId);
+    public Task UnbanFromChannelAsync(long roomId, long userId) => _connection.UnbanFromChannelAsync(roomId, userId);
+    public Task MuteInChannelAsync(long roomId, long userId) => _connection.MuteInChannelAsync(roomId, userId);
+    public Task UnmuteInChannelAsync(long roomId, long userId) => _connection.UnmuteInChannelAsync(roomId, userId);
 
     private void BlockUser(long userId) => _ = _connection.BanUserSessionAsync(userId);
 
@@ -593,6 +946,10 @@ public partial class ServerSessionViewModel : ViewModelBase
         Status = "Connecting...";
         await _connection.ConnectAsync(Host, Port);
         Status = "Connected";
+        // Иконка и имя сервера видны в рейле уже на экране логина, не только после
+        // входа — единственные запросы, которые gateway обрабатывает и без сессии.
+        _ = _connection.FetchServerIconAsync();
+        _ = _connection.FetchServerInfoAsync();
     }
 
     // Тот же "Log in" в UI служит и ручным переподключением: если фоновый цикл сейчас
@@ -655,6 +1012,9 @@ public partial class ServerSessionViewModel : ViewModelBase
     private async Task SendMessageAsync()
     {
         if (SelectedRoom is null || string.IsNullOrWhiteSpace(MessageText)) return;
+        // Кнопка отключена по этому же условию (см. CanSendInSelectedRoom), но Enter
+        // в TextBox идёт через KeyBinding и не смотрит на IsEnabled кнопки.
+        if (!CanSendInSelectedRoom) return;
         await _connection.SendTextAsync(SelectedRoom.Id, MessageText);
         MessageText = "";
     }

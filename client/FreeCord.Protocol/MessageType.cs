@@ -65,6 +65,28 @@ public enum MessageType : ushort
 	IpUnbanRequest = 0x5004,
 	IpUnbanResponse = 0x5005,
 
+	AvatarUploadRequest = 0x6000,
+	AvatarUploadResponse = 0x6001,
+	AvatarFetchRequest = 0x6002,
+	AvatarFetchResponse = 0x6003,
+
+	ServerIconUploadRequest = 0x6010,
+	ServerIconUploadResponse = 0x6011,
+	ServerIconFetchRequest = 0x6012,
+	ServerIconFetchResponse = 0x6013,
+
+	RoomUpdated = 0x0042,
+	RoomDeleted = 0x0043,
+	RoomUpdateRequest = 0x201A,
+	RoomUpdateResponse = 0x201B,
+	RoomDeleteRequest = 0x201C,
+	RoomDeleteResponse = 0x201D,
+
+	ServerInfoRequest = 0x6020,
+	ServerInfoResponse = 0x6021,
+	SetServerInfoRequest = 0x6022,
+	SetServerInfoResponse = 0x6023,
+
 	HistoryRequest = 0x3002,
 	HistoryResponse = 0x3003,
 

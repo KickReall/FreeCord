@@ -1,0 +1,445 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:FreeCord.Desktop.ViewModels"
+             xmlns:protocol="using:FreeCord.Protocol"
+             xmlns:system="using:System"
+             xmlns:local="using:FreeCord.Desktop"
+             x:Class="FreeCord.Desktop.Views.ServerSettingsPanel"
+             x:DataType="vm:ServerSettingsViewModel"
+             Background="#2B2D31">
+
+    <UserControl.Styles>
+        <Style Selector="TextBox">
+            <Setter Property="Background" Value="#1E1F22"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="Foreground" Value="#DBDEE1"/>
+            <Setter Property="Padding" Value="10,8"/>
+        </Style>
+        <Style Selector="Button.accent">
+            <Setter Property="Background" Value="#5865F2"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="Padding" Value="16,8"/>
+        </Style>
+        <Style Selector="Button.secondary">
+            <Setter Property="Background" Value="#4E5058"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="Padding" Value="14,7"/>
+        </Style>
+
+        <!-- Вкладки — самодельная полоса вместо стандартного TabControl, чтобы не
+             тащить его светлую тему-по-умолчанию. Каждая — плоская кнопка без
+             стандартной рамки, цвет текста/полоски снизу приходит из ViewModel. -->
+        <Style Selector="Button.tab">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="CornerRadius" Value="0"/>
+            <Setter Property="Padding" Value="16,12"/>
+            <Setter Property="FontSize" Value="13"/>
+        </Style>
+        <Style Selector="Button.tab:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#32353B"/>
+        </Style>
+        <Style Selector="Button.closeButton">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Foreground" Value="#949BA4"/>
+            <Setter Property="FontSize" Value="16"/>
+            <Setter Property="Padding" Value="10"/>
+        </Style>
+        <Style Selector="Button.closeButton:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#3F4147"/>
+        </Style>
+
+        <Style Selector="Button.danger">
+            <Setter Property="Background" Value="#DA373C"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="Padding" Value="14,7"/>
+        </Style>
+
+        <!-- Строка роли слева — как элементы списков в остальном приложении: без
+             рамки, левым текстом, подсветка только по наведению. -->
+        <Style Selector="Button.roleRow">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="Padding" Value="10,8"/>
+            <Setter Property="Foreground" Value="#DBDEE1"/>
+        </Style>
+        <Style Selector="Button.roleRow:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#35373C"/>
+        </Style>
+    </UserControl.Styles>
+
+    <Grid RowDefinitions="Auto,*">
+
+        <!-- Полоса вкладок + крестик закрытия справа -->
+        <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Background="#1E1F22">
+            <Border Grid.Column="0" BorderBrush="#1A1B1E" BorderThickness="0,0,0,1">
+                <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+                    <StackPanel Orientation="Horizontal">
+                        <!-- Каждая вкладка видна только тем, у кого есть соответствующее право —
+                             голос/видео без своего права: пока задел на вторую версию, ничего
+                             не редактируют, поэтому видны всем, кто вообще открыл панель. -->
+                        <Border BorderThickness="0,0,0,2" BorderBrush="{Binding InfoTabIndicator}"
+                                IsVisible="{Binding Server.CanManageServer}">
+                            <Button Classes="tab" Content="Информация о сервере" Foreground="{Binding InfoTabColor}"
+                                    Command="{Binding SelectInfoTabCommand}"/>
+                        </Border>
+                        <Border BorderThickness="0,0,0,2" BorderBrush="{Binding RolesTabIndicator}"
+                                IsVisible="{Binding Server.CanManageRoles}">
+                            <Button Classes="tab" Content="Роли" Foreground="{Binding RolesTabColor}"
+                                    Command="{Binding SelectRolesTabCommand}"/>
+                        </Border>
+                        <Border BorderThickness="0,0,0,2" BorderBrush="{Binding UsersTabIndicator}"
+                                IsVisible="{Binding Server.CanAccessUsersTab}">
+                            <Button Classes="tab" Content="Пользователи" Foreground="{Binding UsersTabColor}"
+                                    Command="{Binding SelectUsersTabCommand}"/>
+                        </Border>
+                        <Border BorderThickness="0,0,0,2" BorderBrush="{Binding ChannelsTabIndicator}"
+                                IsVisible="{Binding Server.CanManageChannel}">
+                            <Button Classes="tab" Content="Каналы" Foreground="{Binding ChannelsTabColor}"
+                                    Command="{Binding SelectChannelsTabCommand}"/>
+                        </Border>
+                        <Border BorderThickness="0,0,0,2" BorderBrush="{Binding MessagesTabIndicator}"
+                                IsVisible="{Binding Server.CanManageMessages}">
+                            <Button Classes="tab" Content="Сообщения" Foreground="{Binding MessagesTabColor}"
+                                    Command="{Binding SelectMessagesTabCommand}"/>
+                        </Border>
+                        <Border BorderThickness="0,0,0,2" BorderBrush="{Binding FilesTabIndicator}"
+                                IsVisible="{Binding Server.CanManageFiles}">
+                            <Button Classes="tab" Content="Файлы" Foreground="{Binding FilesTabColor}"
+                                    Command="{Binding SelectFilesTabCommand}"/>
+                        </Border>
+                        <Border BorderThickness="0,0,0,2" BorderBrush="{Binding VoiceTabIndicator}">
+                            <Button Classes="tab" Content="Голос" Foreground="{Binding VoiceTabColor}"
+                                    Command="{Binding SelectVoiceTabCommand}"/>
+                        </Border>
+                        <Border BorderThickness="0,0,0,2" BorderBrush="{Binding VideoTabIndicator}">
+                            <Button Classes="tab" Content="Видео" Foreground="{Binding VideoTabColor}"
+                                    Command="{Binding SelectVideoTabCommand}"/>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+
+            <!-- Колбэк закрытия передан при создании ServerSettingsViewModel
+                 (см. MainWindowViewModel) — сама панель не знает, кто её открыл. -->
+            <Button Grid.Column="1" Classes="closeButton" Content="✕"
+                    Command="{Binding CloseCommand}"
+                    VerticalAlignment="Top" ToolTip.Tip="Закрыть"/>
+        </Grid>
+
+        <!-- Содержимое активной вкладки -->
+        <Grid Grid.Row="1">
+
+            <ScrollViewer IsVisible="{Binding IsInfoTab}">
+                <StackPanel Margin="28" Spacing="24" MaxWidth="480" HorizontalAlignment="Left">
+
+                    <Border Background="#1E1F22" CornerRadius="8" Padding="20">
+                        <StackPanel Orientation="Horizontal" Spacing="18">
+                            <Border Width="72" Height="72" CornerRadius="36" Background="#313338" ClipToBounds="True">
+                                <Panel>
+                                    <TextBlock Text="{Binding Server.Initials}" Foreground="White" FontWeight="Bold" FontSize="22"
+                                               IsVisible="{Binding !Server.HasServerIcon}"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    <Image Source="{Binding Server.ServerIcon}" IsVisible="{Binding Server.HasServerIcon}" Stretch="UniformToFill"/>
+                                </Panel>
+                            </Border>
+                            <StackPanel VerticalAlignment="Center" Spacing="6">
+                                <TextBlock Text="Иконка сервера" Foreground="#DBDEE1" FontWeight="SemiBold"/>
+                                <Button Classes="secondary" Content="Загрузить иконку" Click="OnUploadIconClick"
+                                        HorizontalAlignment="Left"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="НАЗВАНИЕ СЕРВЕРА" Foreground="#949BA4" FontSize="11" FontWeight="Bold"/>
+                        <TextBox Text="{Binding NameDraft}"/>
+                    </StackPanel>
+
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="ОПИСАНИЕ" Foreground="#949BA4" FontSize="11" FontWeight="Bold"/>
+                        <TextBox Text="{Binding DescriptionDraft}" AcceptsReturn="True" TextWrapping="Wrap" Height="110"/>
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal" Spacing="16" VerticalAlignment="Center">
+                        <Button Classes="accent" Content="Сохранить" Command="{Binding SaveInfoCommand}"/>
+                        <TextBlock Text="{Binding Server.Status}" Foreground="#949BA4" FontSize="12" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </StackPanel>
+            </ScrollViewer>
+
+            <Grid IsVisible="{Binding IsRolesTab}" ColumnDefinitions="220,*">
+
+                <!-- Список ролей + создание новой -->
+                <Border Grid.Column="0" Background="#1E1F22">
+                    <Grid RowDefinitions="*,Auto" Margin="12">
+                        <ScrollViewer Grid.Row="0">
+                            <ItemsControl ItemsSource="{Binding Roles}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate x:DataType="protocol:RoleInfo">
+                                        <Button Classes="roleRow" Content="{Binding DisplayName}"
+                                                Command="{Binding $parent[UserControl].DataContext.SelectRoleCommand}"
+                                                CommandParameter="{Binding}"
+                                                HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"/>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+
+                        <StackPanel Grid.Row="1" Spacing="8" Margin="0,12,0,0">
+                            <TextBox Text="{Binding NewRoleName}" PlaceholderText="Название новой роли"/>
+                            <Button Classes="secondary" Content="+ Создать роль" Command="{Binding CreateRoleCommand}"
+                                    HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <!-- Права выбранной роли — появляется по клику на роль слева -->
+                <ScrollViewer Grid.Column="1" IsVisible="{Binding HasSelectedRole}">
+                    <StackPanel Margin="28" Spacing="20" MaxWidth="480" HorizontalAlignment="Left">
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="ТЕХНИЧЕСКОЕ ИМЯ" Foreground="#949BA4" FontSize="11" FontWeight="Bold"/>
+                            <TextBox Text="{Binding RoleNameDraft}" IsEnabled="{Binding CanEditSelectedRoleName}"/>
+                        </StackPanel>
+
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="ОТОБРАЖАЕМОЕ ИМЯ" Foreground="#949BA4" FontSize="11" FontWeight="Bold"/>
+                            <TextBox Text="{Binding RoleDisplayNameDraft}"/>
+                        </StackPanel>
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="ПРАВА" Foreground="#949BA4" FontSize="11" FontWeight="Bold" Margin="0,0,0,4"/>
+                            <ItemsControl ItemsSource="{Binding PermissionOptions}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:PermissionOptionViewModel">
+                                        <CheckBox Content="{Binding Label}" IsChecked="{Binding IsChecked}"
+                                                  IsEnabled="{Binding IsEnabled}" Foreground="#DBDEE1" Margin="0,4"/>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <Button Classes="accent" Content="Сохранить" Command="{Binding SaveRoleCommand}"
+                                    IsVisible="{Binding !IsSelectedRoleAdmin}"/>
+                            <Button Classes="danger" Content="Удалить роль" Command="{Binding DeleteRoleCommand}"
+                                    IsVisible="{Binding CanDeleteSelectedRole}"/>
+                        </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
+                <TextBlock Grid.Column="1" IsVisible="{Binding !HasSelectedRole}" Text="Выберите роль слева"
+                           Foreground="#949BA4" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Grid>
+            <ScrollViewer IsVisible="{Binding IsUsersTab}">
+                <StackPanel Margin="20" Spacing="24">
+
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="УЧАСТНИКИ" Foreground="#949BA4" FontSize="11" FontWeight="Bold"/>
+                        <ItemsControl ItemsSource="{Binding Users}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:MemberViewModel">
+                                    <Border Background="#1E1F22" CornerRadius="6" Padding="12" Margin="0,0,0,8">
+                                        <Grid ColumnDefinitions="Auto,140,90,130,130,Auto,Auto" VerticalAlignment="Center">
+                                            <Grid Grid.Column="0" Width="28" Height="28" Margin="0,0,10,0">
+                                                <Border CornerRadius="14" Background="#313338" ClipToBounds="True">
+                                                    <Image Source="{Binding Avatar}" IsVisible="{Binding HasAvatar}" Stretch="UniformToFill"/>
+                                                </Border>
+                                                <Ellipse Width="8" Height="8" Stroke="#1E1F22" StrokeThickness="2"
+                                                         HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                                                         Fill="{Binding PresenceBrush}"/>
+                                            </Grid>
+
+                                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding Username}" Foreground="#DBDEE1" FontWeight="SemiBold"
+                                                           TextTrimming="CharacterEllipsis"/>
+                                                <TextBlock Text="{Binding RoleNames}" Foreground="#949BA4" FontSize="11"
+                                                           TextTrimming="CharacterEllipsis"/>
+                                            </StackPanel>
+
+                                            <TextBlock Grid.Column="2" Text="{Binding Ip}" Foreground="#949BA4" FontSize="11"
+                                                       VerticalAlignment="Center"/>
+
+                                            <ComboBox Grid.Column="3" PlaceholderText="Выдать роль" Width="118" Margin="4,0"
+                                                      IsVisible="{Binding CanManageRoles}"
+                                                      ItemsSource="{Binding $parent[UserControl].DataContext.Roles}"
+                                                      SelectionChanged="OnAssignRoleSelectionChanged">
+                                                <ComboBox.ItemTemplate>
+                                                    <DataTemplate x:DataType="protocol:RoleInfo">
+                                                        <TextBlock Text="{Binding DisplayName}"/>
+                                                    </DataTemplate>
+                                                </ComboBox.ItemTemplate>
+                                            </ComboBox>
+
+                                            <ComboBox Grid.Column="4" PlaceholderText="Убрать роль" Width="118" Margin="4,0"
+                                                      IsVisible="{Binding CanManageRoles}"
+                                                      ItemsSource="{Binding $parent[UserControl].DataContext.Roles}"
+                                                      SelectionChanged="OnRemoveRoleSelectionChanged">
+                                                <ComboBox.ItemTemplate>
+                                                    <DataTemplate x:DataType="protocol:RoleInfo">
+                                                        <TextBlock Text="{Binding DisplayName}"/>
+                                                    </DataTemplate>
+                                                </ComboBox.ItemTemplate>
+                                            </ComboBox>
+
+                                            <Button Grid.Column="5" Classes="secondary" Content="Заблокировать"
+                                                    IsVisible="{Binding CanBlock}" Click="OnBlockUserClick" Margin="4,0"/>
+
+                                            <Button Grid.Column="6" Classes="danger" Content="Удалить"
+                                                    IsVisible="{Binding CanDelete}" Click="OnDeleteUserClick" Margin="4,0,0,0"/>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="ЗАБЛОКИРОВАННЫЕ IP" Foreground="#949BA4" FontSize="11" FontWeight="Bold"/>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBox Text="{Binding NewBanIp}" PlaceholderText="IP-адрес" Width="200"/>
+                            <Button Classes="secondary" Content="Заблокировать IP" Command="{Binding BanIpCommand}"/>
+                        </StackPanel>
+                        <ItemsControl ItemsSource="{Binding BannedIps}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="system:String">
+                                    <Grid ColumnDefinitions="*,Auto" Margin="0,4">
+                                        <TextBlock Grid.Column="0" Text="{Binding}" Foreground="#DBDEE1" VerticalAlignment="Center"/>
+                                        <Button Grid.Column="1" Classes="secondary" Content="Разблокировать"
+                                                Command="{Binding $parent[UserControl].DataContext.UnbanIpCommand}"
+                                                CommandParameter="{Binding}"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </StackPanel>
+            </ScrollViewer>
+            <Grid IsVisible="{Binding IsChannelsTab}" ColumnDefinitions="220,*">
+
+                <!-- Список каналов + создание нового -->
+                <Border Grid.Column="0" Background="#1E1F22">
+                    <Grid RowDefinitions="*,Auto" Margin="12">
+                        <ScrollViewer Grid.Row="0">
+                            <ItemsControl ItemsSource="{Binding Channels}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate x:DataType="protocol:RoomInfo">
+                                        <Button Classes="roleRow" Content="{Binding Name}"
+                                                Command="{Binding $parent[UserControl].DataContext.SelectChannelCommand}"
+                                                CommandParameter="{Binding}"
+                                                HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"/>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+
+                        <StackPanel Grid.Row="1" Spacing="8" Margin="0,12,0,0">
+                            <TextBox Text="{Binding NewChannelName}" PlaceholderText="Название нового канала"/>
+                            <StackPanel Orientation="Horizontal" Spacing="12">
+                                <RadioButton GroupName="NewChannelType" Content="Текстовый"
+                                             IsChecked="{Binding IsNewChannelTypeText}" Foreground="#DBDEE1"/>
+                                <RadioButton GroupName="NewChannelType" Content="Голосовой"
+                                             IsChecked="{Binding IsNewChannelTypeVoice}" Foreground="#DBDEE1"/>
+                            </StackPanel>
+                            <Button Classes="secondary" Content="+ Создать канал" Command="{Binding CreateChannelCommand}"
+                                    HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <!-- Настройки выбранного канала — появляется по клику на канал слева -->
+                <ScrollViewer Grid.Column="1" IsVisible="{Binding HasSelectedChannel}">
+                    <StackPanel Margin="28" Spacing="24" MaxWidth="560" HorizontalAlignment="Left">
+
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="НАЗВАНИЕ КАНАЛА" Foreground="#949BA4" FontSize="11" FontWeight="Bold"/>
+                            <TextBox Text="{Binding ChannelNameDraft}"/>
+                            <StackPanel Orientation="Horizontal" Spacing="12" Margin="0,4,0,0">
+                                <Button Classes="accent" Content="Сохранить" Command="{Binding RenameChannelCommand}"/>
+                                <Button Classes="danger" Content="Удалить канал" Command="{Binding DeleteChannelCommand}"/>
+                                <TextBlock Text="{Binding SelectedChannel.Type, StringFormat='Тип: {0}'}"
+                                           Foreground="#949BA4" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </StackPanel>
+
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="ДОСТУП РОЛЕЙ К КАНАЛУ" Foreground="#949BA4" FontSize="11" FontWeight="Bold"/>
+                            <TextBlock Text="«Наследовать» — для роли нет отдельного правила на этот канал, действует её обычное право. «Разрешить»/«Запретить» — исключение только для этого канала; явное «Разрешить» у любой роли пользователя побеждает «Запретить» у другой его роли."
+                                       Foreground="#6D6F78" FontSize="11" TextWrapping="Wrap"/>
+                            <Grid ColumnDefinitions="140,*,*,*">
+                                <TextBlock Grid.Column="1" Text="Видимость" Foreground="#949BA4" FontSize="11" HorizontalAlignment="Center"/>
+                                <TextBlock Grid.Column="2" Text="Вход" Foreground="#949BA4" FontSize="11" HorizontalAlignment="Center"/>
+                                <TextBlock Grid.Column="3" Text="Сообщения" Foreground="#949BA4" FontSize="11" HorizontalAlignment="Center"/>
+                            </Grid>
+                            <ItemsControl ItemsSource="{Binding ChannelOverrideRows}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:ChannelOverrideRowViewModel">
+                                        <Grid ColumnDefinitions="140,*,*,*" Margin="0,4">
+                                            <TextBlock Grid.Column="0" Text="{Binding RoleDisplayName}"
+                                                       Foreground="#DBDEE1" VerticalAlignment="Center"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                            <ComboBox Grid.Column="1" Margin="4,0" HorizontalAlignment="Stretch"
+                                                      ItemsSource="{Binding AllStates}" SelectedItem="{Binding ViewChannel}">
+                                                <ComboBox.ItemTemplate>
+                                                    <DataTemplate x:DataType="vm:OverrideState">
+                                                        <TextBlock Text="{Binding Converter={x:Static local:OverrideStateToLabelConverter.Instance}}"/>
+                                                    </DataTemplate>
+                                                </ComboBox.ItemTemplate>
+                                            </ComboBox>
+                                            <ComboBox Grid.Column="2" Margin="4,0" HorizontalAlignment="Stretch"
+                                                      ItemsSource="{Binding AllStates}" SelectedItem="{Binding OpenChannel}">
+                                                <ComboBox.ItemTemplate>
+                                                    <DataTemplate x:DataType="vm:OverrideState">
+                                                        <TextBlock Text="{Binding Converter={x:Static local:OverrideStateToLabelConverter.Instance}}"/>
+                                                    </DataTemplate>
+                                                </ComboBox.ItemTemplate>
+                                            </ComboBox>
+                                            <ComboBox Grid.Column="3" Margin="4,0" HorizontalAlignment="Stretch"
+                                                      ItemsSource="{Binding AllStates}" SelectedItem="{Binding SendMessages}">
+                                                <ComboBox.ItemTemplate>
+                                                    <DataTemplate x:DataType="vm:OverrideState">
+                                                        <TextBlock Text="{Binding Converter={x:Static local:OverrideStateToLabelConverter.Instance}}"/>
+                                                    </DataTemplate>
+                                                </ComboBox.ItemTemplate>
+                                            </ComboBox>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="МОДЕРАЦИЯ" Foreground="#949BA4" FontSize="11" FontWeight="Bold"/>
+                            <ComboBox ItemsSource="{Binding Users}" SelectedItem="{Binding ModerationTarget}"
+                                      PlaceholderText="Выберите пользователя" HorizontalAlignment="Stretch">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:MemberViewModel">
+                                        <TextBlock Text="{Binding Username}"/>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button Classes="secondary" Content="Кикнуть" Command="{Binding ModerationKickCommand}"/>
+                                <Button Classes="secondary" Content="Разбанить" Command="{Binding ModerationUnbanCommand}"/>
+                                <Button Classes="secondary" Content="Заглушить" Command="{Binding ModerationMuteCommand}"/>
+                                <Button Classes="secondary" Content="Снять заглушение" Command="{Binding ModerationUnmuteCommand}"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
+                <TextBlock Grid.Column="1" IsVisible="{Binding !HasSelectedChannel}" Text="Выберите канал слева"
+                           Foreground="#949BA4" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Grid>
+            <TextBlock IsVisible="{Binding IsMessagesTab}" Text="Скоро" Foreground="#949BA4" Margin="28"/>
+            <TextBlock IsVisible="{Binding IsFilesTab}" Text="Скоро" Foreground="#949BA4" Margin="28"/>
+            <TextBlock IsVisible="{Binding IsVoiceTab}" Text="Запланировано на вторую версию" Foreground="#949BA4" Margin="28"/>
+            <TextBlock IsVisible="{Binding IsVideoTab}" Text="Запланировано на вторую версию" Foreground="#949BA4" Margin="28"/>
+        </Grid>
+    </Grid>
+</UserControl>

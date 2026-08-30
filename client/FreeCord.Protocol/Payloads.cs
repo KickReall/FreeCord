@@ -36,11 +36,13 @@ public sealed class AuthResponse
 public sealed class RoomCreateRequest
 {
     public string Name { get; set; } = "";
+    public RoomType Type { get; set; } = RoomType.Text;
 
     public byte[] Serialize()
     {
         using var w = new PayloadWriter();
         w.WriteString(Name);
+        w.WriteByte((byte)Type);
         return w.ToArray();
     }
 }
@@ -84,7 +86,7 @@ public sealed class StatusResponse
     }
 }
 
-public sealed record RoomInfo(long Id, string Name, RoomType Type = RoomType.Text);
+public sealed record RoomInfo(long Id, string Name, RoomType Type = RoomType.Text, bool CanSendMessages = true);
 
 public sealed class RoomListResponse
 {
@@ -100,7 +102,8 @@ public sealed class RoomListResponse
             long id = r.ReadInt64();
             string name = r.ReadString();
             var type = (RoomType)r.ReadByte();
-            rooms.Add(new RoomInfo(id, name, type));
+            bool canSendMessages = r.ReadByte() != 0;
+            rooms.Add(new RoomInfo(id, name, type, canSendMessages));
         }
         return new RoomListResponse { Rooms = rooms };
     }
@@ -200,6 +203,7 @@ public sealed class RoomCreatedNotification
 {
     public long RoomId { get; init; }
     public string Name { get; init; } = "";
+    public RoomType Type { get; init; }
 
     public static RoomCreatedNotification Deserialize(byte[] data)
     {
@@ -207,8 +211,60 @@ public sealed class RoomCreatedNotification
         return new RoomCreatedNotification
         {
             RoomId = r.ReadInt64(),
-            Name = r.ReadString()
+            Name = r.ReadString(),
+            Type = (RoomType)r.ReadByte()
         };
+    }
+}
+
+/// <summary>Переименование канала — тот же класс и для запроса, и что шлёт gateway всем
+/// после успеха (см. RoomUpdatedNotification, у неё те же два поля).</summary>
+public sealed class RoomUpdateRequest
+{
+    public long RoomId { get; set; }
+    public string Name { get; set; } = "";
+
+    public byte[] Serialize()
+    {
+        using var w = new PayloadWriter();
+        w.WriteInt64(RoomId);
+        w.WriteString(Name);
+        return w.ToArray();
+    }
+}
+
+public sealed class RoomUpdatedNotification
+{
+    public long RoomId { get; init; }
+    public string Name { get; init; } = "";
+
+    public static RoomUpdatedNotification Deserialize(byte[] data)
+    {
+        using var r = new PayloadReader(data);
+        return new RoomUpdatedNotification { RoomId = r.ReadInt64(), Name = r.ReadString() };
+    }
+}
+
+public sealed class RoomDeleteRequest
+{
+    public long RoomId { get; set; }
+
+    public byte[] Serialize()
+    {
+        using var w = new PayloadWriter();
+        w.WriteInt64(RoomId);
+        return w.ToArray();
+    }
+}
+
+public sealed class RoomDeletedNotification
+{
+    public long RoomId { get; init; }
+
+    public static RoomDeletedNotification Deserialize(byte[] data)
+    {
+        using var r = new PayloadReader(data);
+        return new RoomDeletedNotification { RoomId = r.ReadInt64() };
     }
 }
 
@@ -426,8 +482,11 @@ public sealed class IpBanListResponse
 }
 
 /// <summary>Один пользователь для панели участников — группировка по ролям делается на клиенте.
-/// Online проставляет только gateway (auth не знает о живых TCP-сессиях).</summary>
-public sealed record UserInfo(long Id, string Username, IReadOnlyList<long> RoleIds, bool Online);
+/// Online и Ip проставляет только gateway (auth не знает о живых TCP-сессиях) — Ip пустой,
+/// пока пользователь оффлайн, последний известный адрес не хранится. AvatarVersion = 0 —
+/// аватарки нет; меняется при загрузке новой, клиент перекачивает байты только если версия
+/// разошлась с уже закэшированной у себя (см. AvatarCache).</summary>
+public sealed record UserInfo(long Id, string Username, IReadOnlyList<long> RoleIds, bool Online, long AvatarVersion, string Ip);
 
 public sealed class UserListResponse
 {
@@ -446,9 +505,111 @@ public sealed class UserListResponse
             var roleIds = new List<long>((int)roleCount);
             for (uint j = 0; j < roleCount; j++) roleIds.Add(r.ReadInt64());
             bool online = r.ReadByte() != 0;
-            users.Add(new UserInfo(id, username, roleIds, online));
+            long avatarVersion = r.ReadInt64();
+            string ip = r.ReadString();
+            users.Add(new UserInfo(id, username, roleIds, online, avatarVersion, ip));
         }
         return new UserListResponse { Users = users };
+    }
+}
+
+/// <summary>Сырые байты картинки — общий payload для загрузки своей аватарки и иконки сервера.</summary>
+public sealed class AvatarBytesRequest
+{
+    public byte[] Data { get; set; } = Array.Empty<byte>();
+
+    public byte[] Serialize()
+    {
+        using var w = new PayloadWriter();
+        w.WriteBytes(Data);
+        return w.ToArray();
+    }
+}
+
+/// <summary>Общий ответ на загрузку — и своей аватарки, и иконки сервера.</summary>
+public sealed class AvatarUploadResponse
+{
+    public byte Status { get; init; }
+    public long Version { get; init; }
+
+    public static AvatarUploadResponse Deserialize(byte[] data)
+    {
+        using var r = new PayloadReader(data);
+        return new AvatarUploadResponse { Status = r.ReadByte(), Version = r.ReadInt64() };
+    }
+}
+
+public sealed class AvatarFetchRequest
+{
+    public long UserId { get; set; }
+
+    public byte[] Serialize()
+    {
+        using var w = new PayloadWriter();
+        w.WriteInt64(UserId);
+        return w.ToArray();
+    }
+}
+
+/// <summary>Version = 0 и пустые Data — у пользователя нет аватарки.</summary>
+public sealed class AvatarFetchResponse
+{
+    public long UserId { get; init; }
+    public long Version { get; init; }
+    public byte[] Data { get; init; } = Array.Empty<byte>();
+
+    public static AvatarFetchResponse Deserialize(byte[] data)
+    {
+        using var r = new PayloadReader(data);
+        long userId = r.ReadInt64();
+        long version = r.ReadInt64();
+        byte[] bytes = r.ReadByteArray();
+        return new AvatarFetchResponse { UserId = userId, Version = version, Data = bytes };
+    }
+}
+
+/// <summary>Version = 0 и пустые Data — у сервера нет иконки. Тот же тип и для ответа
+/// на явный запрос, и для пуша всем подключённым сразу после успешной загрузки.</summary>
+public sealed class ServerIconResponse
+{
+    public long Version { get; init; }
+    public byte[] Data { get; init; } = Array.Empty<byte>();
+
+    public static ServerIconResponse Deserialize(byte[] data)
+    {
+        using var r = new PayloadReader(data);
+        long version = r.ReadInt64();
+        byte[] bytes = r.ReadByteArray();
+        return new ServerIconResponse { Version = version, Data = bytes };
+    }
+}
+
+/// <summary>Имя и описание сервера — короткие строки, без версии/кэша (перекачать
+/// заново дешевле, чем кэш городить). Тот же тип для ответа на запрос и для пуша
+/// всем сразу после того, как владелец их поменял.</summary>
+public sealed class ServerInfoResponse
+{
+    public string Name { get; init; } = "";
+    public string Description { get; init; } = "";
+
+    public static ServerInfoResponse Deserialize(byte[] data)
+    {
+        using var r = new PayloadReader(data);
+        return new ServerInfoResponse { Name = r.ReadString(), Description = r.ReadString() };
+    }
+}
+
+public sealed class SetServerInfoRequest
+{
+    public string Name { get; set; } = "";
+    public string Description { get; set; } = "";
+
+    public byte[] Serialize()
+    {
+        using var w = new PayloadWriter();
+        w.WriteString(Name);
+        w.WriteString(Description);
+        return w.ToArray();
     }
 }
 

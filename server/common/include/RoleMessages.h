@@ -204,6 +204,14 @@ struct UserInfo {
     std::string username;
     std::vector<int64_t> roleIds;
     bool online = false;
+    // 0 — аватарки нет. Меняется при загрузке новой (см. AvatarMessages.h) — клиент
+    // сравнивает с уже закэшированной у себя версией и перекачивает байты, только
+    // если они разошлись, а не при каждом обновлении списка пользователей.
+    int64_t avatarVersion = 0;
+    // Тот же принцип, что и у online — заполняет только gateway из текущей живой
+    // сессии (Session::remoteIp), auth всегда отдаёт пустую строку. Пусто — оффлайн
+    // (последний известный IP не хранится, только текущий, пока сессия жива).
+    std::string ip;
 };
 
 struct UserListResponsePayload {
@@ -220,6 +228,8 @@ struct UserListResponsePayload {
                 WriteScalar(buffer, roleId);
             }
             WriteScalar(buffer, static_cast<uint8_t>(user.online ? 1 : 0));
+            WriteScalar(buffer, user.avatarVersion);
+            WriteString(buffer, user.ip);
         }
         return buffer;
     }
@@ -236,6 +246,8 @@ struct UserListResponsePayload {
                 info.roleIds.push_back(ReadScalar<int64_t>(buffer, offset));
             }
             info.online = ReadScalar<uint8_t>(buffer, offset) != 0;
+            info.avatarVersion = ReadScalar<int64_t>(buffer, offset);
+            info.ip = ReadString(buffer, offset);
             r.users.push_back(info);
         }
         return r;

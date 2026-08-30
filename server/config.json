@@ -1,5 +1,5 @@
 {
-    "auth": { "port": 6001, "dbPath": "freecord_auth.db" },
+    "auth": { "port": 6001, "dbPath": "freecord_auth.db", "avatarDir": "avatars" },
     "room": { "port": 6002, "dbPath": "freecord_rooms.db" },
     "message": { "port": 6003, "dbPath": "freecord_messages.db", "maxTextLength": 4000 },
     "gateway": {
@@ -9,6 +9,8 @@
         "clientIdleTimeoutSec": 45,
         "serviceCallTimeoutMs": 5000,
         "tls": { "certPath": "gateway.crt", "keyPath": "gateway.key" },
-        "rateLimit": { "messagesPerSecond": 5, "messageBurst": 10, "typingPerSecond": 1, "typingBurst": 3 }
+        "rateLimit": { "messagesPerSecond": 5, "messageBurst": 10, "typingPerSecond": 1, "typingBurst": 3 },
+        "avatarMaxSizeBytes": 2097152,
+        "serverIconPath": "server-icon.png"
     }
 }

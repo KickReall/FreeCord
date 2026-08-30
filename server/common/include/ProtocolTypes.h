@@ -28,6 +28,10 @@ enum class MessageType : uint16_t {
     JoinRoomResponse = 0x0011,  // gateway -> клиент: статус + список участников
     LeaveRoom = 0x0012,  // клиент -> gateway: roomId
 
+    RoomUpdated = 0x0042,  // gateway -> все клиенты: канал переименован (roomId, name)
+    RoomDeleted = 0x0043,  // gateway -> все клиенты: канал удалён (roomId) — принудительный
+                            // выход тем, кто был внутри, отдельным ChannelKicked (см. ForceLeaveRoomForAll)
+
     TextMessage = 0x0020,  // в обе стороны: roomId, senderId, timestamp, текст
     TypingRequest = 0x0021,  // клиент -> gateway: roomId — "я печатаю"
     TypingBroadcast = 0x0022,  // gateway -> остальным в комнате: roomId, senderId, senderName
@@ -91,6 +95,11 @@ enum class MessageType : uint16_t {
     ChannelUnmuteRequest = 0x2018,  // roomId, userId
     ChannelUnmuteResponse = 0x2019,  // status
 
+    RoomUpdateRequest = 0x201A,  // roomId, name — переименование канала
+    RoomUpdateResponse = 0x201B,  // status: 0=ok, 1=не найден, 2=имя занято, 254=нет прав
+    RoomDeleteRequest = 0x201C,  // roomId
+    RoomDeleteResponse = 0x201D,  // status: 0=ok, 1=не найден, 2=нельзя удалить системную комнату, 254=нет прав
+
     // --- Gateway <-> Message (internal) ---
     SendMessageRequest = 0x3000,  // gateway -> message: roomId, senderId, text
     SendMessageResponse = 0x3001,  // message -> gateway: status + messageId + timestamp
@@ -128,4 +137,33 @@ enum class MessageType : uint16_t {
     IpBanResponse = 0x5003,  // status
     IpUnbanRequest = 0x5004,  // ip
     IpUnbanResponse = 0x5005,  // status
+
+    // --- Аватарки пользователей и иконка сервера ---
+    // Upload — composite (только gateway): клиент шлёт только байты, userId
+    // подставляет сам gateway из сессии, иначе можно было бы выдать себя за
+    // чужую аватарку, назвав в запросе чужой id.
+    AvatarUploadRequest = 0x6000,  // клиент -> gateway: байты
+    AvatarUploadResponse = 0x6001,  // gateway -> клиент: status (0=ok,1=слишком большой,2=сервис недоступен) + version
+    // Fetch — тот же тип клиент->gateway и gateway->auth (raw-forward, как список
+    // ролей/участников): аватарка не секрет, доступна любому залогиненному.
+    AvatarFetchRequest = 0x6002,  // userId
+    AvatarFetchResponse = 0x6003,  // userId, version (0 — аватарки нет), байты
+    SetUserAvatarRequest = 0x6004,  // internal only, gateway -> auth: userId, байты
+    SetUserAvatarResponse = 0x6005,  // internal only, auth -> gateway: status (0=ok,1=не найден) + version
+
+    // Иконка сервера — один файл на весь деплой, у gateway нет своей БД, поэтому
+    // без auth: composite-обработчик прямо в gateway, хранит файл на диске сам.
+    ServerIconUploadRequest = 0x6010,  // клиент -> gateway: байты
+    ServerIconUploadResponse = 0x6011,  // status (0=ok,1=слишком большой,2=не удалось сохранить,254=нет прав) + version
+    ServerIconFetchRequest = 0x6012,  // (пусто)
+    ServerIconFetchResponse = 0x6013,  // version (0 — иконки нет), байты; тот же тип и для пуша всем при смене
+
+    // Имя и описание сервера — глобальные, задаёт только владелец (см. вкладку
+    // "Информация о сервере"). В отличие от иконки версией не кэшируются — это
+    // короткие строки, перекачивать их заново каждый раз дешевле, чем городить кэш.
+    // Разрешено и до логина, как ServerIconFetchRequest — имя видно в рейле сразу.
+    ServerInfoRequest = 0x6020,  // (пусто)
+    ServerInfoResponse = 0x6021,  // name, description; тот же тип и для пуша всем при смене
+    SetServerInfoRequest = 0x6022,  // name, description
+    SetServerInfoResponse = 0x6023,  // status (0=ok,1=слишком длинное значение,254=нет прав)
 };

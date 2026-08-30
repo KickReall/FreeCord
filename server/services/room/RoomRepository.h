@@ -19,12 +19,19 @@ struct ChannelOverride {
     uint32_t deny;
 };
 
+enum class RoomUpdateResult { Ok, NotFound, NameTaken, SystemRoom };
+enum class RoomDeleteResult { Ok, NotFound, SystemRoom };
+
 class RoomRepository {
 public:
     explicit RoomRepository(const std::string& dbPath);
 
     // Возвращает id новой комнаты, либо -1, если имя занято.
-    int64_t CreateRoom(const std::string& name);
+    int64_t CreateRoom(const std::string& name, uint8_t type);
+    // Системную комнату (is_system=1) переименовать нельзя — см. RoomUpdateResult::SystemRoom.
+    RoomUpdateResult UpdateRoomName(int64_t roomId, const std::string& name);
+    // Системную комнату (is_system=1) удалить нельзя — см. RoomDeleteResult::SystemRoom.
+    RoomDeleteResult DeleteRoom(int64_t roomId);
 
     bool RoomExists(int64_t roomId);
 
@@ -53,6 +60,10 @@ private:
     std::mutex m_mutex;
 
     std::string m_sqlCreateRoom;
+    std::string m_sqlUpdateRoomName;
+    std::string m_sqlDeleteRoom;
+    std::string m_sqlDeleteRoomMembers;
+    std::string m_sqlRoomIsSystem;
     std::string m_sqlRoomExists;
     std::string m_sqlAddMember;
     std::string m_sqlRemoveMember;

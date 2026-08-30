@@ -1,1 +1,1 @@
-INSERT INTO rooms (name) VALUES (?)
+INSERT INTO rooms (name, type) VALUES (?, ?)
